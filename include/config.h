@@ -24,15 +24,27 @@
 //  32, 34, 35, 36, 39. GPIO1/3 are the MB shield's serial port. GPIO4 is the
 //  flash LED. That leaves exactly 2, 12, 13, 14, 15 - and we use four of them.
 // ---------------------------------------------------------------------------
-#define PIN_AIN1 13  // motor A (left)  direction 1
-#define PIN_AIN2 14  // motor A (left)  direction 2
-#define PIN_BIN1 15  // motor B (right) direction 1
+//  Which GPIO drives which input is pure convention - all four are ordinary
+//  LEDC outputs and none is bound to a particular TB6612 pin. Rewire freely and
+//  change these four lines to match; nothing else in the project cares.
+#define PIN_AIN1 14  // motor A (motor 1, on AO1/AO2) direction 1
+#define PIN_AIN2 2   // motor A (motor 1, on AO1/AO2) direction 2  <- strapping, see below
+#define PIN_BIN1 15  // motor B (motor 2, on BO1/BO2) direction 1
+#define PIN_BIN2 13  // motor B (motor 2, on BO1/BO2) direction 2
 
-// GPIO2 is a strapping pin: held high at boot it refuses download mode. The
-// TB6612FNG's inputs are internally pulled down, so this is normally fine. If
-// Stage 0 shows uploads failing only once the driver is wired, change this to
-// 12 and move that one wire. Nothing else in the project needs to change.
-#define PIN_BIN2 2  // motor B (right) direction 2   (fallback: 12)
+// GPIO2 is a strapping pin: held high at boot the chip refuses download mode
+// and uploads fail. Measured 0.6 Mohm from every TB6612 input to VCC on this
+// build, i.e. no pull-up, so it sits low and download mode works. If uploads
+// ever start failing only once the driver is connected, that is this pin -
+// move it to GPIO12 and change the line above.
+//
+// EXTERNAL PULL-DOWNS ARE REQUIRED: 4.7k from each of AIN1/AIN2/BIN1/BIN2 to
+// GND. The TB6612FNG does NOT pull its inputs down, and the ESP32's own reset
+// defaults are not uniform - GPIO13/14/15 come up weakly HIGH while GPIO2 comes
+// up weakly LOW. Any pair that ends up mismatched reads as a drive command, so
+// one track would run at full throttle from power-on until motors_begin()
+// executes - including for the whole duration of every firmware upload.
+// The resistors force all four low so both channels idle in coast.
 
 // ---------------------------------------------------------------------------
 //  LEDC (hardware PWM) channels

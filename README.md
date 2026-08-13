@@ -1,236 +1,203 @@
 # ESP32-CAM web page controlled UGV
 
-Tank-style tracked UGV: AI-Thinker ESP32-CAM on an ESP32-CAM-MB USB shield,
-two DC motors through a TB6612FNG, 2S 18650 pack through a 5V buck converter.
-Streams MJPEG video to a phone and takes real-time bidirectional throttle over a
-WebSocket.
+Tank-style tracked UGV: AI-Thinker ESP32-CAM on an ESP32-CAM-MB USB shield, two
+DC motors through a TB6612FNG, 2S 18650 pack through a 5V buck converter.
 
-The build is split into stages. **Each stage is its own PlatformIO environment**,
-so every stage stays flashable forever as a debugging tool. When Stage 4
-misbehaves, reflash Stage 1a or Stage 2 to isolate hardware from firmware in one
-upload.
+**Current state: motor wiring and control verification.** The firmware runs a
+looping four-phase motor pattern so the wiring can be confirmed by watching the
+wheels. Camera streaming and the phone web UI come next.
 
 ---
 
-## Quick start
+## Build and run
 
 `pio` is not on `PATH`:
 
 ```bash
 export PATH="$HOME/.platformio/penv/bin:$PATH"
-cd /Users/vsevolodsynytskyi/Documents/PlatformIO/Projects/esp32
+cd "/Users/vsevolodsynytskyi/Documents/PlatformIO/Projects/ESP32-CAM web page controlled UGV"
 
-pio run -e stage0_blink -t upload -t monitor
+pio run -t upload -t monitor
 ```
 
-| Environment | What it does |
-|---|---|
-| `stage0_blink` | LED + serial. Proves the upload path and the strapping pins. |
-| `stage1a_camera_probe` | Camera only, no WiFi. The real "check the ESP" milestone. |
-| `stage1b_stream` | MJPEG over station mode, viewed on a laptop. |
-| `stage2_motors_serial` | Motors from serial. No camera, no WiFi. Wheels off the ground. |
-| `stage3_ap_video` | SoftAP + web page + video on the phone. No control yet. |
-| `stage4_full` | Shipping firmware: video + WebSocket throttle. |
+### What it does
 
-`default_envs` in `platformio.ini` is `stage0_blink`; change it as you progress,
-or always pass `-e`.
+Loops forever, with a 1.5 s stop between phases so transitions are obvious:
+
+| Phase | Duration | Expect |
+|---|---|---|
+| 1/4 both forward | 5 s | both wheels turning the **same** way |
+| 2/4 both backward | 5 s | both reversed, still matching |
+| 3/4 A fwd, B back | 5 s | wheels turning **opposite** ways |
+| 4/4 A back, B fwd | 5 s | opposite again, both flipped |
+
+Five-second arming countdown at boot before the first movement.
+
+| Key | Action |
+|---|---|
+| `SPACE` | pause / resume (pause stops immediately, bypassing the slew limiter) |
+| `+` / `-` | throttle ±100 |
+| `r` | restart at phase 1 |
+| any other | emergency stop |
+
+### Fixing what you see
+
+| Symptom | Fix |
+|---|---|
+| A motor runs the wrong way | `MOTOR_INVERT_L` / `MOTOR_INVERT_R` in `include/config.h` |
+| Wrong track responds | swap motor leads between AO and BO, or swap the `PIN_AIN*` / `PIN_BIN*` pairs |
+| Buzzes but doesn't turn | below its start threshold — press `+`, then record `MOTOR_MIN_MOVE_*` |
 
 ---
 
 ## Wiring
 
-TB6612FNG in the **4-pin scheme**: `PWMA`, `PWMB`, `STBY` and `VCC` are tied
-permanently to **3.3V**, and the PWM lives on the direction pins instead.
+TB6612FNG in the **4-pin scheme**: `PWMA`, `PWMB`, `STBY` and `VCC` tied
+permanently to **3.3V**, with the PWM on the direction pins instead.
 
 | ESP32-CAM | TB6612FNG |
 |---|---|
-| GPIO13 | AIN1 (left) |
-| GPIO14 | AIN2 (left) |
-| GPIO15 | BIN1 (right) |
-| GPIO2 | BIN2 (right) |
+| GPIO14 | AIN1 — channel A (motor 1) |
+| GPIO2 | AIN2 — channel A |
+| GPIO15 | BIN1 — channel B (motor 2) |
+| GPIO13 | BIN2 — channel B |
 | 3V3 | PWMA, PWMB, STBY, VCC |
 | GND | GND (star point at the battery hub) |
 | — | VM ← 2S+, with 1000 µF bulk cap |
+| 4.7 kΩ each | AIN1, AIN2, BIN1, BIN2 → GND (**required**, see below) |
 
 **GPIO12 and GPIO16 must be left unconnected.**
 
-### Why these four pins
+Which GPIO drives which input is arbitrary — all four are plain LEDC outputs.
+Rewire as convenient and edit the four `PIN_*` lines in `include/config.h`.
+
+### Why only these pins are available
 
 The camera occupies GPIO 0, 5, 18, 19, 21, 22, 23, 25, 26, 27, 32, 34, 35, 36,
 39. GPIO1/3 are the MB shield's serial. GPIO4 is the flash LED. **GPIO16 is the
 PSRAM chip-select** — driving it corrupts the camera framebuffer. That leaves
-2, 12, 13, 14, 15, and we use four of them.
+2, 12, 13, 14, 15, and GPIO12 high at boot sets VDD_SDIO to 1.8 V and the board
+appears dead.
 
-GPIO13/14 are unencumbered. GPIO15 is a strapping pin, but low is harmless (it
-only silences the ROM boot log — cosmetic; your own serial output is
-unaffected). For the fourth pin **GPIO2 beats GPIO12**: both are strapping pins,
-but GPIO2 high at boot merely refuses download mode, whereas GPIO12 high at boot
-sets VDD_SDIO to 1.8V and the board looks dead. Swap to GPIO12 by changing one
-line in `include/config.h` if Stage 0 shows a problem.
+Four usable pins is exactly why the driver runs in the 4-pin scheme. The
+conventional 6-pin wiring would force spending GPIO16 (losing PSRAM, so no VGA
+framebuffer) or GPIO4 (a strobing headlight).
+
+### ⚠️ The pull-down resistors are not optional
+
+The TB6612FNG does not pull its inputs down, and the ESP32's reset defaults are
+not uniform: GPIO13/14/15 come up weakly **high**, GPIO2 comes up weakly **low**.
+Any mismatched pair reads as a drive command, so one track runs at **full
+throttle** from power-on until `motors_begin()` executes — including for the
+entire duration of every firmware upload, since the chip sits in download mode
+and never reaches your code. Put the vehicle on the floor, hit Upload, and it
+drives off.
+
+4.7 kΩ from each input to GND beats the ESP's ~45 kΩ internal pull-ups (0.31 V,
+well under the 0.8 V threshold) and costs 0.7 mA when driven. No arrangement of
+GPIO 2/13/14/15 avoids this — three default high, only one defaults low.
+
+Until they are fitted, use this order every time:
+
+1. **VM disconnected** from the battery
+2. Upload, wait for the banner
+3. **Then** connect VM
+
+`motors_begin()` is the first statement in `setup()` for the same reason, which
+shrinks the window to bootloader time — but firmware cannot help during an
+upload.
 
 ### Power
 
 ```
-2S 18650 (7.4V nom / 8.4V max)
-  ├─► TB6612 VM ──┬── 1000µF electrolytic (at the driver, short leads)
-  │               └── 0.1µF ceramic
-  └─► 5V buck ──► ESP32-CAM 5V pin ──► onboard LDO ──► 3.3V ──► TB6612 logic
+2S 18650 (7.4 V nom / 8.4 V max)
+  ├─► TB6612 VM ──┬── 1000 µF electrolytic (at the driver, short leads)
+  │               └── 0.1 µF ceramic
+  └─► 5V buck ──► ESP32-CAM 5V pin ──► onboard LDO ──► 3V3 ──► TB6612 logic
 ```
 
 Star ground at the battery hub, not daisy-chained. 0.1 µF across each motor's
 terminals and from each terminal to the can.
 
 **Brownout is the most common failure in these builds** — motor inrush dips the
-rail, the ESP32 resets mid-stream, and it looks like a firmware bug. Every stage
-prints `esp_reset_reason()` at boot so you can tell the difference. Never feed 5V
-into the 3.3V pin.
+rail, the ESP32 resets, and it looks like a firmware bug. The boot banner prints
+`esp_reset_reason()` so you can tell the difference. Never feed 5 V into 3V3.
 
-**USB and the buck must not both drive the 5V pin.** On the bench, power the ESP
-from USB only and feed VM from the battery with a common ground — USB never
-sources motor current that way. In the field, buck only, USB unplugged.
+**USB and the buck must not both drive the 5 V pin.** On the bench: USB for the
+ESP, battery for VM only, common ground. In the field: buck only, USB unplugged.
 
----
+### Motors are still unmeasured
 
-## Bring-up order
+`MOTOR_MAX_DUTY` is `0.55f`, holding the average at ~4.6 V — safe for almost
+anything. But stall current is unknown against the TB6612FNG's **1.2 A
+continuous / 3.2 A peak** limit, and stall current is the binding constraint,
+not voltage. Measure winding resistance across the motor terminals and compute
+`I_stall ≈ 8.4 V ÷ R`. Over ~1.5 A means the driver is undersized.
 
-### Stage 0 — flash it twice
-
-1. With **nothing** on the motor pins. Confirms port, baud, auto-reset, upload.
-2. With the TB6612FNG wired. This is the strapping-pin proof. Before powering
-   up, ohmmeter GPIO2 and GPIO15 to 3.3V and GND — TB6612FNG inputs are normally
-   pulled *down*, which is what we want. An external pull-up on GPIO2 breaks
-   download mode; move BIN2 to GPIO12.
-
-Then measure the motors: inline ammeter, bench supply at 6V, record free-run and
-stall current. **The TB6612FNG is 1.2 A continuous / 3.2 A peak per channel**, and
-a stalled 6V TT motor pulls around 1.5 A — stall current is the binding
-constraint, not voltage. If stall exceeds ~1.5 A the driver is undersized for
-this chassis.
-
-### Stage 1a → 1b
-
-1a proves the OV2640, SCCB bus, PSRAM and JPEG encoder with WiFi entirely out of
-the picture. Only then bring up the radio.
-
-For 1b, copy `include/secrets.h.example` to `include/secrets.h` and fill in your
-**2.4 GHz** network (the ESP32 cannot see a 5 GHz-only network).
-
-### Stage 2 — wheels off the ground
-
-Current-limit the supply to just above the measured free-run current.
-
-Prove all four side × direction combinations before any web UI can obscure a
-wiring fault. Then run the sweeps `1`/`2`/`3`/`4` and record where each track
-*first* starts turning into the four `MOTOR_MIN_MOVE_*` values in
-`include/config.h`. **Four numbers, not two** — forward and reverse differ per
-side, and a single per-side figure makes the vehicle pull to one side in reverse.
-
-Press `k` to kill the pilot and watch the failsafe fire. Then reflash Stage 1a to
-confirm the camera still initialises with the driver wired.
-
-### Stage 3 → 4
-
-Join `TankCam` / `tankcam1234` (change these in `config.h`) and open
-`http://192.168.4.1/`. Your phone will warn about "no internet" — expected. Turn
-mobile data off, or Android may silently fall back to cellular.
+Touch the driver chip periodically. Warm is fine; too hot to hold means stop.
 
 ---
 
-## Controls (Stage 4)
+## Design notes
 
-Two full-height vertical sliders, one per track, no mixing.
-
-```
- top    = +100  full throttle FORWARD
- middle =    0  stop (± MOTOR_DEADBAND)
- bottom = -100  full throttle BACKWARD
- release ->  0  springs back to centre
-```
-
-Both up to go forward, opposed to pivot in place. Releasing the screen *is* the
-stop, which is why there is no stop button to fumble for.
-
-### Layered stopping, weakest assumption last
-
-| # | Trigger | Mechanism |
-|---|---|---|
-| 1 | Release a slider | zero sent out of band immediately |
-| 2 | Screen off / backgrounded | `visibilitychange` zeroes and sends |
-| 3 | Socket closes | `close_fn` stops the motors at once |
-| 4 | Nothing arrives for `CMD_TIMEOUT_MS` | firmware deadman in `motors_tick()` |
-
-Only #4 trusts nothing. Worst-case stopping time is the 300 ms detection window
-plus roughly 100 ms of slew-limited ramp-down. Going much below ~200 ms invites
-nuisance stops from ordinary SoftAP jitter.
-
----
-
-## Architecture notes
-
-**Two HTTP servers, not one.** `:80` serves the UI and the WebSocket; `:81`
-serves MJPEG. An MJPEG response never ends — on a single instance it permanently
-occupies the worker and the control endpoint stops answering. Each instance also
-needs its own `ctrl_port`; both default to 32768, so the second would silently
-fail to start.
-
-**Signed end to end.** Slider value → WebSocket payload → duty are all signed,
-and the sign alone selects direction. Nothing carries a separate direction flag,
-so a direction bit can never disagree with a magnitude.
+**Signed end to end.** Throttle is signed `-1000 … +1000` through the whole
+chain, and the sign alone selects direction. Nothing carries a separate
+direction flag, so a direction bit can never disagree with a magnitude.
 
 **One writer to the PWM registers.** `motors_set()` only updates targets and
-refreshes the failsafe timer; a dedicated 50 Hz task at priority 6 (above the
-httpd tasks) is the sole caller of `ledcWrite`, so streaming a heavy frame can
-never delay a throttle update.
+refreshes the failsafe timer; `motors_tick()` at 50 Hz is the sole caller of
+`ledcWrite`.
 
 **Slow decay by default.** With the PWM on the direction pins, holding one pin
 high and modulating the other with the *inverted* duty puts the off phase in
-short-brake, so current recirculates and low-speed torque stays linear. The
+short-brake, so current recirculates and low-speed torque stays linear. That
 inversion is the easiest bug to introduce here — get it backwards and the motor
-runs fastest at zero throttle. Coast mode is one flag away for comparison.
+runs fastest at zero throttle.
 
-**Transmission is timer-owned.** `pointermove` fires up to 120 Hz on a modern
-phone; only the 20 Hz timer transmits, plus one out-of-band send each on
-touch-down and release. Frames are sent even when unchanged — deduplicating them
-looks free but would let the deadman trip while holding a steady throttle.
+**Asymmetric slew limiting.** Ramping up is rate-limited to stop inrush browning
+out the ESP; ramping toward zero runs ~4× faster so stops feel immediate. A
+command dragged from full forward to full reverse passes through zero rather
+than reversing the bridge instantly.
+
+**Failsafe.** `motors_tick()` stops the motors if no command has arrived within
+`CMD_TIMEOUT_MS` (300 ms). It exists so that a control channel going quiet can
+never mean "keep doing what you were doing".
 
 ---
 
 ## Known constraints
 
-**No battery monitoring is possible via ADC.** All ADC1 pins are consumed by the
-camera, and ADC2 is hardware-blocked whenever the WiFi radio is active. Since 2S
-cells must not go below 2.5 V each, use a standalone low-voltage alarm buzzer on
-the balance leads.
+**No battery monitoring via ADC.** All ADC1 pins are consumed by the camera, and
+ADC2 is hardware-blocked while WiFi is active. Since 2S cells must not drop
+below 2.5 V each, use a standalone low-voltage alarm buzzer on the balance leads.
 
-**The platform version is pinned deliberately.** `espressif32 @ 7.0.1` pins
-`framework-arduinoespressif32` to `~3.20017.0`, i.e. Arduino-ESP32 core **2.0.17**,
-which uses `ledcSetup`/`ledcAttachPin`/`ledcWrite(channel, duty)`. Core 3.x
-replaced these with `ledcAttach`/`ledcWrite(pin, duty)`. `motors.cpp` has an
-`#error` guard so this fails loudly rather than subtly.
+**The platform version is pinned.** `espressif32 @ 7.0.1` pins the Arduino core
+to 2.0.17, which uses `ledcSetup`/`ledcAttachPin`/`ledcWrite(channel, duty)`.
+Core 3.x replaced these; `motors.cpp` has an `#error` guard so it fails loudly.
 
 `esp32-camera` ships prebuilt inside the core, so there are **no `lib_deps`**.
-
-**No OTA slot.** `huge_app.csv` gives 3 MB of app and no OTA partition. The build
-is ~870 KB, so switching to `min_spiffs.csv` (1.9 MB × 2) would buy OTA
-comfortably once the USB port becomes awkward to reach.
 
 ---
 
 ## Layout
 
 ```
-platformio.ini              six stage environments, pinned platform
+platformio.ini              single environment, pinned platform
 include/
   config.h                  every tunable: pins, PWM, limits, calibration, AP
-  secrets.h.example         copy to secrets.h for Stage 1b
+  secrets.h.example         copy to secrets.h when station mode is needed
 src/
+  main.cpp                  current firmware: motor wiring check
   board.{h,cpp}             serial banner, reset reason, status LED
-  camera_pins.h             AI-Thinker OV2640 map
-  camera.{h,cpp}            sensor init with PSRAM fallback, JPEG sanity check
   motors.{h,cpp}            LEDC, signed control, slew limiting, failsafe
-  net.{h,cpp}               station + SoftAP bring-up
-  stream_server.{h,cpp}     httpd :81, MJPEG
-  web_server.{h,cpp}        httpd :80, page + WebSocket control
-  web_page.h                the mobile UI, one self-contained string
-  stages/                   one main per stage
+  camera_pins.h             AI-Thinker OV2640 map          ] written and
+  camera.{h,cpp}            sensor init, PSRAM fallback    ] compiling, but
+  net.{h,cpp}               station + SoftAP bring-up      ] not yet called
+  stream_server.{h,cpp}     httpd :81, MJPEG               ] from main.cpp —
+  web_server.{h,cpp}        httpd :80, page + WebSocket    ] the linker
+  web_page.h                mobile UI, self-contained      ] strips them
 ```
+
+The camera and networking modules are complete but inert until `main.cpp` calls
+them. They add nothing to the binary in the meantime: the build is 298 KB either
+way.

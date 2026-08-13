@@ -157,10 +157,20 @@ void motors_begin() {
   const uint8_t channels[4] = {LEDC_CH_AIN1, LEDC_CH_AIN2, LEDC_CH_BIN1, LEDC_CH_BIN2};
   const uint8_t pins[4] = {PIN_AIN1, PIN_AIN2, PIN_BIN1, PIN_BIN2};
 
+  // FIRST, before anything else: force all four inputs low. Until this runs the
+  // pins are inputs holding the ESP32's reset defaults - GPIO13/14/15 weakly
+  // high, GPIO2 weakly low - and a mismatched pair reads as a drive command.
+  // Nothing here allocates, logs or waits, so the unsafe window closes in
+  // microseconds rather than after the serial banner.
+  for (int i = 0; i < 4; i++) {
+    pinMode(pins[i], OUTPUT);
+    digitalWrite(pins[i], LOW);
+  }
+
   for (int i = 0; i < 4; i++) {
     ledcSetup(channels[i], MOTOR_PWM_FREQ_HZ, MOTOR_PWM_BITS);
-    // Park at zero before the pin is driven, so attaching cannot produce a
-    // momentary kick.
+    // Park at zero before the pin is handed to LEDC, so attaching cannot
+    // produce a momentary kick.
     ledcWrite(channels[i], 0);
     ledcAttachPin(pins[i], channels[i]);
   }
@@ -172,8 +182,10 @@ void motors_begin() {
 
   drive_pair(LEDC_CH_AIN1, LEDC_CH_AIN2, 0);
   drive_pair(LEDC_CH_BIN1, LEDC_CH_BIN2, 0);
+}
 
-  Serial.printf("[mot] %u kHz / %u-bit on GPIO %d,%d (left) and %d,%d (right)\n",
+void motors_log_config() {
+  Serial.printf("[mot] %u kHz / %u-bit  A(motor1)=GPIO%d,%d  B(motor2)=GPIO%d,%d\n",
                 MOTOR_PWM_FREQ_HZ / 1000, MOTOR_PWM_BITS, PIN_AIN1, PIN_AIN2, PIN_BIN1,
                 PIN_BIN2);
   Serial.printf("[mot] duty ceiling %.0f%%, deadband +/-%d, %s decay\n",
