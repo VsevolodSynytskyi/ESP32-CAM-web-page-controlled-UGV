@@ -27,3 +27,14 @@ bool camera_is_degraded();
 // Torn frames are the classic symptom of an XCLK the module cannot keep up
 // with - see CAM_XCLK_HZ in config.h.
 bool camera_frame_looks_valid(const camera_fb_t *fb);
+
+// Fully stop the camera: sensor, XCLK and the I2S DMA all go away. Unlike
+// pulling PWDN this leaves nothing running, so a network measurement taken
+// afterwards reflects the radio alone rather than the radio plus a driver
+// retrying failed captures.
+void camera_end();
+
+// False between camera_end() and the next camera_begin(). Callers must check
+// this instead of relying on esp_camera_fb_get() returning null, which would
+// otherwise spin the CPU on retries and corrupt the very measurement being made.
+bool camera_is_running();

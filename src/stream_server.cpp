@@ -178,7 +178,9 @@ static void video_push_task(void *arg) {
   (void)arg;
   for (;;) {
     const int fd = s_ws_fd;
-    if (fd < 0 || s_httpd == nullptr) {
+    // Skip the grab entirely when the camera is stopped. Retrying a failing
+    // capture would spin the CPU and pollute any measurement taken meanwhile.
+    if (fd < 0 || s_httpd == nullptr || !camera_is_running()) {
       vTaskDelay(pdMS_TO_TICKS(100));
       continue;
     }
@@ -238,6 +240,11 @@ static void on_session_close(httpd_handle_t hd, int sockfd) {
 //  GET /jpg  - one frame per request
 // ---------------------------------------------------------------------------
 static esp_err_t jpg_handler(httpd_req_t *req) {
+  if (!camera_is_running()) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    httpd_resp_send(req, "camera stopped", HTTPD_RESP_USE_STRLEN);
+    return ESP_FAIL;
+  }
   const uint32_t t0 = millis();
   camera_fb_t *fb = esp_camera_fb_get();
   const uint32_t t1 = millis();
@@ -286,7 +293,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   // staring at a frozen frame. Dropping it lets the page reconnect instead.
   const int kMaxConsecutiveNulls = 20;  // ~100 ms
 
-  while (true) {
+  while (camera_is_running()) {
     const uint32_t t0 = millis();
     camera_fb_t *fb = esp_camera_fb_get();
     const uint32_t t1 = millis();
@@ -413,6 +420,41 @@ static esp_err_t index_handler(httpd_req_t *req) {
   return httpd_resp_send(req, kIndexHtml, HTTPD_RESP_USE_STRLEN);
 }
 
+// ---------------------------------------------------------------------------
+//  GET /speed  - raw throughput test, no camera involved
+//
+//  Sends a megabyte of filler as fast as TCP allows and reports the rate. This
+//  is the measurement that separates "the camera is breaking the radio" from
+//  "the radio is broken", because it exercises the network path with the camera
+//  contributing nothing. Run it once normally, then again with the sensor
+//  powered down (the 'c' key), and compare.
+//
+//  A healthy ESP32 SoftAP at close range manages several Mbit/s here.
+// ---------------------------------------------------------------------------
+static esp_err_t speed_handler(httpd_req_t *req) {
+  static uint8_t filler[4096];
+  memset(filler, 'x', sizeof(filler));
+
+  httpd_resp_set_type(req, "application/octet-stream");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+
+  const int kChunks = 256;  // 1 MB
+  const uint32_t t0 = millis();
+  size_t sent = 0;
+
+  for (int i = 0; i < kChunks; i++) {
+    if (httpd_resp_send_chunk(req, (const char *)filler, sizeof(filler)) != ESP_OK) break;
+    sent += sizeof(filler);
+  }
+  httpd_resp_send_chunk(req, nullptr, 0);
+
+  const uint32_t ms = millis() - t0;
+  const float kbps = ms ? (sent * 8.0f / ms) : 0.0f;
+  Serial.printf("\n[speed] %u KB in %lu ms = %.0f kbps (%.2f Mbit/s)\n", (unsigned)(sent / 1024),
+                (unsigned long)ms, kbps, kbps / 1000.0f);
+  return ESP_OK;
+}
+
 // Browsers request this unprompted. Without a handler it 404s and the socket
 // lingers, which is wasted capacity on a server holding a long-lived stream.
 static esp_err_t favicon_handler(httpd_req_t *req) {
@@ -452,6 +494,9 @@ bool stream_server_begin(uint16_t port, bool with_index) {
 
   const httpd_uri_t stream_uri = {"/stream", HTTP_GET, stream_handler, nullptr};
   httpd_register_uri_handler(s_httpd, &stream_uri);
+
+  const httpd_uri_t speed_uri = {"/speed", HTTP_GET, speed_handler, nullptr};
+  httpd_register_uri_handler(s_httpd, &speed_uri);
 
   const httpd_uri_t favicon_uri = {"/favicon.ico", HTTP_GET, favicon_handler, nullptr};
   httpd_register_uri_handler(s_httpd, &favicon_uri);

@@ -1,26 +1,41 @@
 // ===========================================================================
 //  ESP32-CAM web page controlled UGV
 //
-//  CURRENT SCOPE: camera bring-up and MJPEG streaming.
+//  CURRENT SCOPE: camera bring-up and streaming.
 //
-//  Sequence, deliberately in this order so a fault is never ambiguous:
+//  BLOCKED: the OV2640 module on this board is faulty. It runs too hot to
+//  touch and collapses WiFi throughput whenever the camera subsystem is active
+//  - 132 kbps running against 5204 kbps with esp_camera_deinit() called, same
+//  board, same client, same minute. Streaming numbers are meaningless until it
+//  is replaced. See the README for what was eliminated and how to validate the
+//  replacement.
 //
-//      1. park the motor driver inputs (the driver is still wired)
-//      2. bring up the camera and report one frame over serial - if this
-//         fails, the radio never starts, so a camera fault can never be
-//         mistaken for a network fault
+//  Sequence, ordered so a fault is never ambiguous:
+//
+//      1. park the motor driver inputs - the driver is still wired
+//      2. bring up the camera and report one frame over serial. If this fails
+//         the radio never starts, so a camera fault cannot be mistaken for a
+//         network fault.
 //      3. join WiFi: station mode if include/secrets.h has credentials,
-//         otherwise fall back to hosting a SoftAP
-//      4. serve MJPEG at  /stream  with a bare viewer page at  /
+//         otherwise host a SoftAP
+//      4. serve video and a viewer page
 //
-//  Motors are parked and stay parked this whole time. No motor control here.
+//  Motors are parked and stay parked. No motor control in this build.
 //
-//  Serial keys, for tuning the camera once it is mounted:
+//  Endpoints:
+//      /          viewer page, switchable between the three transports
+//      /ws        WebSocket frame push
+//      /jpg       one JPEG per request
+//      /stream    multipart MJPEG
+//      /speed     1 MB throughput test, no camera data in the payload
+//
+//  Serial keys:
 //      1..5   frame size: QVGA / VGA / SVGA / XGA / SXGA
-//      q / Q  JPEG quality worse / better
-//      v      toggle vertical flip
-//      h      toggle horizontal mirror
-//      p      print status
+//      q / Q  JPEG quality worse / better (takes adaptive off)
+//      a      toggle adaptive quality
+//      c      stop / restart the camera entirely
+//      v / h  vertical flip / horizontal mirror
+//      p      status
 // ===========================================================================
 
 #include <Arduino.h>
@@ -34,10 +49,10 @@
 #include "net.h"
 #include "stream_server.h"
 
-// Levels sampled off the driver inputs before anything reconfigures them.
-// Kept as a permanent guard: if a pin ever changes behaviour - a microSD card
-// in the slot, a rewire - this prints *** DRIVE COMMAND *** at startup rather
-// than letting you discover it as a runaway motor.
+// Driver input levels sampled before anything reconfigures them. Kept as a
+// permanent guard: if a pin ever changes behaviour - a microSD card in the
+// slot, a rewire - this prints *** DRIVE COMMAND *** at startup rather than
+// letting you discover it as a runaway motor.
 static int g_boot_ain1, g_boot_ain2, g_boot_bin1, g_boot_bin2;
 
 static bool g_ap_mode = false;
@@ -82,13 +97,9 @@ static void report_first_frame() {
   esp_camera_fb_return(fb);
 }
 
-// Signal strength of the phone as seen by our own access point. This is the
-// number that decides whether a slow stream is a radio problem: WiFi drops to
-// its lowest PHY rates as RSSI falls, and at the bottom end throughput
-// collapses far faster than the signal bars suggest.
-//
-//   > -50 dBm  excellent      -70 dBm  usable
-//     -60 dBm  good         < -80 dBm  expect a slideshow
+// Signal strength of the client as seen by our own access point. Useful
+// context, though never the limit here: this board has delivered 5 Mbit/s at
+// -55 dBm with the camera stopped.
 static int ap_client_rssi() {
   wifi_sta_list_t list;
   if (esp_wifi_ap_get_sta_list(&list) != ESP_OK || list.num == 0) return 0;
@@ -99,16 +110,15 @@ static void print_status() {
   uint32_t grab_ms = 0, send_ms = 0, avg_bytes = 0, gap_ms = 0;
   stream_server_timing(&grab_ms, &send_ms, &avg_bytes, &gap_ms);
 
-  // grab vs send is the whole diagnosis when fps is low. A big grab_ms means
-  // the sensor or the JPEG encoder is the bottleneck; a big send_ms means the
-  // radio is. They need completely different fixes.
+  // The three timings blame three different things: grab the camera, send the
+  // radio, gap the client or a server refusing connections.
   const int rssi = g_ap_mode ? ap_client_rssi() : WiFi.RSSI();
   const float kbps = stream_server_fps() * avg_bytes * 8.0f / 1000.0f;
 
   Serial.printf("[status] %5.1f fps | grab %3lu send %4lu GAP %5lu ms | %5lu B/f q%-2d | %5.0f kbps "
                 "| rssi %d | %s\n",
-                stream_server_fps(), grab_ms, send_ms, gap_ms, avg_bytes, stream_server_quality(),
-                kbps, rssi,
+                stream_server_fps(), grab_ms, send_ms, gap_ms, avg_bytes,
+                stream_server_quality(), kbps, rssi,
                 stream_server_has_client() ? "streaming" : "idle");
 }
 
@@ -141,24 +151,19 @@ static void poll_serial() {
         Serial.printf("adaptive quality %s\n", stream_server_adaptive() ? "ON" : "OFF");
         break;
 
-      // Cycle WiFi transmit power. This is the supply test, and the logic is
-      // backwards from intuition: at RSSI -17 dBm there is ~60 dB of margin, so
-      // turning the radio DOWN cannot hurt the link - but it substantially cuts
-      // the current spike on every transmit. If a weak supply is browning out
-      // the PA mid-packet, less power means fewer lost packets means FASTER
-      // throughput. An improvement here convicts the power supply; no change
-      // exonerates it.
-      case 't': {
-        static const wifi_power_t levels[] = {WIFI_POWER_19_5dBm, WIFI_POWER_15dBm,
-                                              WIFI_POWER_11dBm, WIFI_POWER_8_5dBm,
-                                              WIFI_POWER_5dBm};
-        static const char *names[] = {"19.5", "15", "11", "8.5", "5"};
-        static int idx = 0;
-        idx = (idx + 1) % 5;
-        WiFi.setTxPower(levels[idx]);
-        Serial.printf("\n*** tx power %s dBm *** watch the send time\n", names[idx]);
+      // Stop the camera outright - sensor, XCLK and DMA - so /speed measures the
+      // radio alone. This is the test that isolated the faulty module, and it is
+      // how you validate a replacement.
+      case 'c':
+        if (camera_is_running()) {
+          camera_end();
+          Serial.println(F("\n*** camera STOPPED *** /speed now measures the radio alone"));
+        } else {
+          camera_begin();
+          camera_warmup();
+          Serial.println(F("\n*** camera restarted ***"));
+        }
         break;
-      }
 
       case 'v':
         g_vflip = !g_vflip;
@@ -178,16 +183,16 @@ static void poll_serial() {
 }
 
 void setup() {
-  // Sample the reset-default levels first, then park the driver. The motor
-  // wiring is untouched by this stage, but the driver is still connected and
-  // still awake, so it stays parked rather than left to its reset defaults.
+  // Sample the reset-default levels, then park the driver. The motor wiring is
+  // untouched by this build, but the driver is still connected and still awake,
+  // so it is held in a known state rather than left to its reset defaults.
   g_boot_ain1 = digitalRead(PIN_AIN1);
   g_boot_ain2 = digitalRead(PIN_AIN2);
   g_boot_bin1 = digitalRead(PIN_BIN1);
   g_boot_bin2 = digitalRead(PIN_BIN2);
   motors_begin();
 
-  board_begin("camera + MJPEG stream");
+  board_begin("camera + streaming");
   board_led_begin();
 
   Serial.println(F("--- motor pins at reset ---"));
@@ -210,10 +215,6 @@ void setup() {
   camera_warmup();
   report_first_frame();
 
-  // Station mode if credentials exist, SoftAP otherwise. Station is easier on
-  // the bench - the laptop keeps its internet connection and DevTools - while
-  // the AP needs no configuration at all and is what the vehicle will use in
-  // the field.
   Serial.println();
   if (net_begin_sta()) {
     g_ap_mode = false;
@@ -223,30 +224,21 @@ void setup() {
     g_ap_mode = true;
   }
 
-  // One server for now: the viewer page and the stream share port 80, which is
-  // fine while nothing else needs to answer. When the control channel arrives
-  // the stream moves to its own instance on STREAM_PORT, because an MJPEG
-  // response never ends and would otherwise occupy the only worker.
   if (!stream_server_begin(80, /*with_index=*/true)) halt_blinking("stream server failed");
 
   Serial.println();
   Serial.printf("  open  %s  in a browser\n", stream_url().c_str());
-  if (g_ap_mode) {
-    Serial.printf("  (join the \"%s\" network first)\n", AP_SSID);
-  }
-  Serial.println(F("  keys: 1-5 size | q/Q quality | a adaptive(off) | t TX power | v/h flip | p status"));
+  if (g_ap_mode) Serial.printf("  (join the \"%s\" network first)\n", AP_SSID);
+  Serial.println(F("  also /speed for a 1 MB throughput test"));
+  Serial.println(F("  keys: 1-5 size | q/Q quality | a adaptive | c camera | v/h flip | p status"));
   Serial.println();
 }
 
 void loop() {
   poll_serial();
 
-  // Fast blink while a client is pulling frames.
   board_led_heartbeat(stream_server_has_client() ? 250 : 1500);
 
-  // Print unconditionally. Only printing while a client is attached hides the
-  // connect/disconnect churn, which is exactly what you need to see when a
-  // stream is failing and the browser is silently retrying.
   static uint32_t last = 0;
   if (millis() - last >= 2000) {
     last = millis();

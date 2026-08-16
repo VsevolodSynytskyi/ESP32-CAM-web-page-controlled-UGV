@@ -6,6 +6,7 @@
 #include "config.h"
 
 static bool s_degraded = false;
+static bool s_running = false;
 
 bool camera_is_degraded() { return s_degraded; }
 
@@ -40,8 +41,6 @@ bool camera_begin() {
   c.ledc_channel = LEDC_CHANNEL_7;
 
   c.pixel_format = PIXFORMAT_JPEG;
-  c.sccb_i2c_port = -1;
-
   c.sccb_i2c_port = 0;
 
   if (psramFound()) {
@@ -103,6 +102,7 @@ bool camera_begin() {
   camera_set_vflip(CAM_VFLIP != 0);
   camera_set_hmirror(CAM_HMIRROR != 0);
 
+  s_running = true;
   return true;
 }
 
@@ -143,3 +143,22 @@ bool camera_frame_looks_valid(const camera_fb_t *fb) {
   const bool eoi = fb->buf[fb->len - 2] == 0xFF && fb->buf[fb->len - 1] == 0xD9;
   return soi && eoi;
 }
+
+void camera_end() {
+  // Clear the flag first, then wait before deinitialising. esp_camera_deinit()
+  // frees the framebuffers, and a stream handler may be mid-frame holding one -
+  // reading fb->len afterwards is a use-after-free, which is what produced
+  // nonsense like "996392876 B/f" in the status line. The handlers check
+  // camera_is_running() each iteration, so this gives them time to drop out.
+  //
+  // Not airtight - a proper fix needs a reader lock around the framebuffer -
+  // but this is a diagnostic path, and closing the window beats pretending it
+  // is not there.
+  s_running = false;
+  delay(300);
+
+  esp_camera_deinit();
+  Serial.println(F("[cam] deinitialised - sensor, XCLK and DMA all stopped"));
+}
+
+bool camera_is_running() { return s_running; }

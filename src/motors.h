@@ -69,3 +69,15 @@ bool motors_failsafe_active();
 // compare them on the bench.
 void motors_set_slow_decay(bool on);
 bool motors_slow_decay();
+
+// Hand the four driver pins back to the GPIO peripheral: LEDC channels
+// detached, pins returned to inputs with pull-downs so both channels read as a
+// stop. Nothing motor-related is left running afterwards.
+//
+// This exists so the motor subsystem can be eliminated as a variable when
+// measuring something else - throughput, in particular. motors_begin() leaves
+// four LEDC timers clocked at 20 kHz and four pins driven into the TB6612 even
+// when the duty is zero, and "probably harmless" is not the same as measured.
+//
+// Call motors_begin() again to restore normal operation.
+void motors_release();
