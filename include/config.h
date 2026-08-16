@@ -186,12 +186,24 @@
 // reports odd frame sizes or the image is scrambled, try 16500000 then 10000000.
 #define CAM_XCLK_HZ 20000000
 
-// 640x480 is the sweet spot for FPV over SoftAP. Expands inside camera.cpp,
-// which includes the sensor header.
-#define CAM_FRAMESIZE FRAMESIZE_VGA
+// Start small and work up. Frame size is the single biggest lever on frame
+// rate, because it drives bytes-per-frame almost linearly and this link is
+// bandwidth-limited long before the sensor is:
+//
+//     QVGA  320x240   ~6 kB/frame    sensor can do 50 fps
+//     VGA   640x480  ~25 kB/frame    sensor can do 25 fps
+//     SVGA  800x600  ~40 kB/frame    sensor can do 25 fps
+//
+// So a link delivering 25 kB/s manages 1 fps at VGA but 4 fps at QVGA, for the
+// same radio. Press 1-5 on the serial console to change this live, then set
+// whatever holds up here. Expands inside camera.cpp, which includes the sensor
+// header.
+#define CAM_FRAMESIZE FRAMESIZE_QVGA
 
-// 10-63. Lower means better quality and bigger frames. 12 is a good balance.
-#define CAM_JPEG_QUALITY 12
+// 10-63. Higher means worse quality and SMALLER frames. 14 trades a little
+// detail for noticeably fewer bytes; drop toward 10 once the link proves it can
+// carry it.
+#define CAM_JPEG_QUALITY 14
 
 // Two buffers are required for CAMERA_GRAB_LATEST, which is what keeps the
 // video feeling live instead of trailing half a second behind.
@@ -211,7 +223,17 @@
 // no router is involved and the vehicle works anywhere.
 #define AP_SSID "TankCam"
 #define AP_PASSWORD "tankcam1234"  // WPA2 requires at least 8 characters
-#define AP_CHANNEL 1
+
+// 0 = scan the band at boot and pick the quietest of 1 / 6 / 11.
+// 1-13 = force that channel.
+//
+// Worth leaving on auto. 2.4 GHz is usually crowded, and channel congestion is
+// invisible to RSSI: signal strength says how loudly the other end hears you,
+// not whether anyone else is talking. A contended channel gives clear windows
+// alternating with multi-second stalls at perfect signal - which reads as a
+// broken stream rather than a busy band.
+#define AP_CHANNEL 0
+
 #define AP_MAX_CONN 1  // one pilot; extra clients only steal bandwidth
 
 #define HTTP_PORT 80    // UI page + WebSocket control

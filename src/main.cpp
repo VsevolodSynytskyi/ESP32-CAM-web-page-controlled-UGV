@@ -1,275 +1,238 @@
 // ===========================================================================
 //  ESP32-CAM web page controlled UGV
 //
-//  CURRENT SCOPE: motor wiring and control verification.
+//  CURRENT SCOPE: camera bring-up and MJPEG streaming.
 //
-//  Runs a four-phase pattern on a loop so the wheels can be watched directly:
+//  Sequence, deliberately in this order so a fault is never ambiguous:
 //
-//      1/4   both forward           5 s
-//      2/4   both backward          5 s
-//      3/4   A forward, B backward  5 s   (pivot one way)
-//      4/4   A backward, B forward  5 s   (pivot the other way)
-//            ... repeat forever
+//      1. park the motor driver inputs (the driver is still wired)
+//      2. bring up the camera and report one frame over serial - if this
+//         fails, the radio never starts, so a camera fault can never be
+//         mistaken for a network fault
+//      3. join WiFi: station mode if include/secrets.h has credentials,
+//         otherwise fall back to hosting a SoftAP
+//      4. serve MJPEG at  /stream  with a bare viewer page at  /
 //
-//  with a short stop between phases so the transitions are unmistakable.
+//  Motors are parked and stay parked this whole time. No motor control here.
 //
-//  *** WHEELS OFF THE GROUND ***
-//
-//  VM can stay connected permanently, including during uploads. The motor pins
-//  are paired by their boot-default levels so that each channel reads as a stop
-//  before firmware runs - see the note above PIN_AIN1 in config.h.
-//
-//  Keys:
-//      SPACE          pause / resume  (pausing stops the motors immediately)
-//      + / -          throttle by 100
-//      r              restart the sequence at phase 1
-//      any other key  emergency stop
+//  Serial keys, for tuning the camera once it is mounted:
+//      1..5   frame size: QVGA / VGA / SVGA / XGA / SXGA
+//      q / Q  JPEG quality worse / better
+//      v      toggle vertical flip
+//      h      toggle horizontal mirror
+//      p      print status
 // ===========================================================================
 
 #include <Arduino.h>
+#include <WiFi.h>
+#include <esp_wifi.h>
 
 #include "board.h"
+#include "camera.h"
 #include "config.h"
 #include "motors.h"
-
-// High enough to clearly turn an unmeasured gearmotor, low enough to be gentle.
-// MOTOR_MAX_DUTY in config.h still applies on top of this.
-#define START_THROTTLE 700
-
-#define DRIVE_MS 5000
-#define PAUSE_MS 1500
-#define ARM_DELAY_MS 5000
-
-struct Phase {
-  const char *label;
-  const char *expect;
-  int8_t l;  // -1, 0 or +1, multiplied by the throttle
-  int8_t r;
-  uint32_t ms;
-};
-
-static const Phase kPhases[] = {
-    {"1/4  BOTH FORWARD", "both wheels turning the SAME way", +1, +1, DRIVE_MS},
-    {"     stop", nullptr, 0, 0, PAUSE_MS},
-    {"2/4  BOTH BACKWARD", "both reversed, still matching each other", -1, -1, DRIVE_MS},
-    {"     stop", nullptr, 0, 0, PAUSE_MS},
-    {"3/4  PIVOT  A fwd / B back", "wheels turning OPPOSITE ways", +1, -1, DRIVE_MS},
-    {"     stop", nullptr, 0, 0, PAUSE_MS},
-    {"4/4  PIVOT  A back / B fwd", "opposite again, both the other way round", -1, +1, DRIVE_MS},
-    {"     stop", nullptr, 0, 0, PAUSE_MS},
-};
-static const int kPhaseCount = sizeof(kPhases) / sizeof(kPhases[0]);
-
-static bool g_running = false;  // set true once the arming countdown elapses
-static bool g_armed = false;
-static uint32_t g_boot_ms = 0;
-static int g_phase = 0;
-static uint32_t g_phase_start = 0;
-static int16_t g_throttle = START_THROTTLE;
-
-static void announce() {
-  const Phase &p = kPhases[g_phase];
-  if (p.expect != nullptr) {
-    Serial.printf("\n[%s]  A=%+5d  B=%+5d\n", p.label, p.l * g_throttle, p.r * g_throttle);
-    Serial.printf("      expect: %s\n", p.expect);
-  } else {
-    Serial.println(F("[     stop]"));
-  }
-}
-
-static void enter_phase(int index) {
-  g_phase = index % kPhaseCount;
-  g_phase_start = millis();
-  announce();
-}
-
-static void pause_motors(const char *why) {
-  g_running = false;
-  motors_stop(false);  // immediate, bypasses the slew limiter
-  Serial.printf("\n*** %s *** press SPACE to resume\n", why);
-}
-
-static void poll_serial() {
-  while (Serial.available() > 0) {
-    const char c = (char)Serial.read();
-    if (c == '\r' || c == '\n') continue;
-
-    if (c == ' ') {
-      if (g_running) {
-        pause_motors("PAUSED");
-      } else {
-        g_running = true;
-        g_armed = true;
-        g_phase_start = millis();
-        Serial.println(F("\n*** RUNNING ***"));
-        announce();
-      }
-      continue;
-    }
-
-    if (c == '+') {
-      g_throttle += 100;
-      if (g_throttle > MOTOR_SCALE) g_throttle = MOTOR_SCALE;
-      Serial.printf("throttle %d\n", g_throttle);
-      continue;
-    }
-    if (c == '-') {
-      g_throttle -= 100;
-      if (g_throttle < 0) g_throttle = 0;
-      Serial.printf("throttle %d\n", g_throttle);
-      continue;
-    }
-    if (c == 'r') {
-      enter_phase(0);
-      Serial.println(F("restarted at phase 1"));
-      continue;
-    }
-
-    pause_motors("STOPPED");
-  }
-}
+#include "net.h"
+#include "stream_server.h"
 
 // Levels sampled off the driver inputs before anything reconfigures them.
+// Kept as a permanent guard: if a pin ever changes behaviour - a microSD card
+// in the slot, a rewire - this prints *** DRIVE COMMAND *** at startup rather
+// than letting you discover it as a runaway motor.
 static int g_boot_ain1, g_boot_ain2, g_boot_bin1, g_boot_bin2;
 
-// Every other pin this board breaks out, so the pairing can be chosen from
-// measured levels rather than datasheet defaults. GPIO13's documented pull-up
-// turned out not to hold here, so nothing is assumed any more.
-static const uint8_t kSurveyPins[] = {4, 13, 16};
-static int g_survey[sizeof(kSurveyPins)];
-static bool g_survey_unstable[sizeof(kSurveyPins)];
+static bool g_ap_mode = false;
+static int g_quality = CAM_JPEG_QUALITY;
+static bool g_vflip = CAM_VFLIP != 0;
+static bool g_hmirror = CAM_HMIRROR != 0;
 
 static const char *pair_verdict(int in1, int in2) {
   if (in1 == in2) return in1 ? "(H,H) short brake - safe" : "(L,L) coast - safe";
   return "(H,L) or (L,H)  *** DRIVE COMMAND - motor runs during boot ***";
 }
 
+static void halt_blinking(const char *why) {
+  Serial.printf("\n[fatal] %s - halting.\n", why);
+  while (true) {
+    board_led_heartbeat(200);
+    delay(10);
+  }
+}
+
+static String stream_url() {
+  const IPAddress ip = g_ap_mode ? WiFi.softAPIP() : WiFi.localIP();
+  return "http://" + ip.toString() + "/";
+}
+
+static void report_first_frame() {
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (fb == nullptr) {
+    Serial.println(F("[cam] init succeeded but the first capture returned null"));
+    return;
+  }
+
+  Serial.println();
+  Serial.println(F("--- first frame ---"));
+  Serial.printf("  size    : %u bytes\n", (unsigned)fb->len);
+  Serial.printf("  dims    : %u x %u\n", (unsigned)fb->width, (unsigned)fb->height);
+  Serial.printf("  format  : %s\n", fb->format == PIXFORMAT_JPEG ? "JPEG" : "NOT JPEG");
+  Serial.printf("  markers : %s\n", camera_frame_looks_valid(fb)
+                                        ? "SOI/EOI present, frame intact"
+                                        : "INVALID - try lowering CAM_XCLK_HZ");
+  Serial.println(F("-------------------"));
+  esp_camera_fb_return(fb);
+}
+
+// Signal strength of the phone as seen by our own access point. This is the
+// number that decides whether a slow stream is a radio problem: WiFi drops to
+// its lowest PHY rates as RSSI falls, and at the bottom end throughput
+// collapses far faster than the signal bars suggest.
+//
+//   > -50 dBm  excellent      -70 dBm  usable
+//     -60 dBm  good         < -80 dBm  expect a slideshow
+static int ap_client_rssi() {
+  wifi_sta_list_t list;
+  if (esp_wifi_ap_get_sta_list(&list) != ESP_OK || list.num == 0) return 0;
+  return list.sta[0].rssi;
+}
+
+static void print_status() {
+  uint32_t grab_ms = 0, send_ms = 0, avg_bytes = 0, gap_ms = 0;
+  stream_server_timing(&grab_ms, &send_ms, &avg_bytes, &gap_ms);
+
+  // grab vs send is the whole diagnosis when fps is low. A big grab_ms means
+  // the sensor or the JPEG encoder is the bottleneck; a big send_ms means the
+  // radio is. They need completely different fixes.
+  const int rssi = g_ap_mode ? ap_client_rssi() : WiFi.RSSI();
+  const float kbps = stream_server_fps() * avg_bytes * 8.0f / 1000.0f;
+
+  Serial.printf("[status] %5.1f fps | grab %3lu send %4lu GAP %5lu ms | %5lu B/f q%-2d | %5.0f kbps "
+                "| rssi %d | %s\n",
+                stream_server_fps(), grab_ms, send_ms, gap_ms, avg_bytes, stream_server_quality(),
+                kbps, rssi,
+                stream_server_has_client() ? "streaming" : "idle");
+}
+
+static void poll_serial() {
+  while (Serial.available() > 0) {
+    const char c = (char)Serial.read();
+    switch (c) {
+      case '1': camera_set_framesize(FRAMESIZE_QVGA); Serial.println(F("QVGA 320x240")); break;
+      case '2': camera_set_framesize(FRAMESIZE_VGA);  Serial.println(F("VGA 640x480")); break;
+      case '3': camera_set_framesize(FRAMESIZE_SVGA); Serial.println(F("SVGA 800x600")); break;
+      case '4': camera_set_framesize(FRAMESIZE_XGA);  Serial.println(F("XGA 1024x768")); break;
+      case '5': camera_set_framesize(FRAMESIZE_SXGA); Serial.println(F("SXGA 1280x1024")); break;
+
+      // Manual quality takes over from the adaptive controller, otherwise the
+      // two fight and the setting silently springs back.
+      case 'q':
+        stream_server_set_adaptive(false);
+        g_quality += 3;
+        camera_set_quality(g_quality);
+        Serial.printf("quality %d (higher = worse, smaller), adaptive OFF\n", g_quality);
+        break;
+      case 'Q':
+        stream_server_set_adaptive(false);
+        g_quality -= 3;
+        camera_set_quality(g_quality);
+        Serial.printf("quality %d (lower = better, bigger), adaptive OFF\n", g_quality);
+        break;
+      case 'a':
+        stream_server_set_adaptive(!stream_server_adaptive());
+        Serial.printf("adaptive quality %s\n", stream_server_adaptive() ? "ON" : "OFF");
+        break;
+
+      case 'v':
+        g_vflip = !g_vflip;
+        camera_set_vflip(g_vflip);
+        Serial.printf("vflip %s\n", g_vflip ? "on" : "off");
+        break;
+      case 'h':
+        g_hmirror = !g_hmirror;
+        camera_set_hmirror(g_hmirror);
+        Serial.printf("hmirror %s\n", g_hmirror ? "on" : "off");
+        break;
+
+      case 'p': print_status(); break;
+      default: break;
+    }
+  }
+}
+
 void setup() {
-  // Sample the reset-default levels first. Nothing has configured these pins
-  // yet, so this is exactly what the TB6612 has been seeing since the core came
-  // out of reset. Four register reads, a few microseconds - it does not
-  // meaningfully delay motors_begin() below.
+  // Sample the reset-default levels first, then park the driver. The motor
+  // wiring is untouched by this stage, but the driver is still connected and
+  // still awake, so it stays parked rather than left to its reset defaults.
   g_boot_ain1 = digitalRead(PIN_AIN1);
   g_boot_ain2 = digitalRead(PIN_AIN2);
   g_boot_bin1 = digitalRead(PIN_BIN1);
   g_boot_bin2 = digitalRead(PIN_BIN2);
-
-  // Survey the spare pins too. Each is sampled repeatedly: a pin that keeps
-  // changing is being driven by something else, which for GPIO16 would be
-  // direct evidence that it really is the PSRAM chip-select.
-  for (size_t i = 0; i < sizeof(kSurveyPins); i++) {
-    const int first = digitalRead(kSurveyPins[i]);
-    bool changed = false;
-    for (int n = 0; n < 64; n++) {
-      if (digitalRead(kSurveyPins[i]) != first) changed = true;
-    }
-    g_survey[i] = first;
-    g_survey_unstable[i] = changed;
-  }
-
-  // Absolutely first after that, before Serial or anything else. Until this
-  // runs, the pins sit at their reset defaults and a mismatched pair reads to
-  // the TB6612 as a drive command. Every millisecond before this call is a
-  // millisecond a track may be running at full battery voltage.
   motors_begin();
 
-  board_begin("motor wiring check");
+  board_begin("camera + MJPEG stream");
   board_led_begin();
-  motors_log_config();
 
-  // What the driver actually saw during the boot window. This is measured, not
-  // assumed - the ESP32's documented reset defaults can be overridden by
-  // anything else on the pin, and GPIO2/12/13/14 are also the SD_MMC lines, so
-  // an inserted microSD card loads them.
+  Serial.println(F("--- motor pins at reset ---"));
+  Serial.printf("  A: GPIO%-2d=%d GPIO%-2d=%d  %s\n", PIN_AIN1, g_boot_ain1, PIN_AIN2, g_boot_ain2,
+                pair_verdict(g_boot_ain1, g_boot_ain2));
+  Serial.printf("  B: GPIO%-2d=%d GPIO%-2d=%d  %s\n", PIN_BIN1, g_boot_bin1, PIN_BIN2, g_boot_bin2,
+                pair_verdict(g_boot_bin1, g_boot_bin2));
   Serial.println();
-  Serial.println(F("--- pin levels at reset, before firmware touched them ---"));
-  Serial.printf("  A: AIN1 GPIO%-2d = %d   AIN2 GPIO%-2d = %d   %s\n", PIN_AIN1, g_boot_ain1,
-                PIN_AIN2, g_boot_ain2, pair_verdict(g_boot_ain1, g_boot_ain2));
-  Serial.printf("  B: BIN1 GPIO%-2d = %d   BIN2 GPIO%-2d = %d   %s\n", PIN_BIN1, g_boot_bin1,
-                PIN_BIN2, g_boot_bin2, pair_verdict(g_boot_bin1, g_boot_bin2));
-  Serial.println(F("  (a channel only stays still if its two inputs MATCH)"));
+
+  // Camera before the radio. If the sensor is faulty we stop here, so the error
+  // is unambiguous instead of tangled up with a WiFi problem.
+  Serial.printf("[cam] xclk %d Hz, quality %d, %d framebuffer(s)\n", CAM_XCLK_HZ,
+                CAM_JPEG_QUALITY, CAM_FB_COUNT);
+  if (!camera_begin()) {
+    Serial.println(F("[cam] Check the ribbon cable is fully seated and the latch"));
+    Serial.println(F("[cam] closed, and that the 5V rail is solid - the OV2640"));
+    Serial.println(F("[cam] browns out more easily than the ESP32 does."));
+    halt_blinking("camera init failed");
+  }
+  camera_warmup();
+  report_first_frame();
+
+  // Station mode if credentials exist, SoftAP otherwise. Station is easier on
+  // the bench - the laptop keeps its internet connection and DevTools - while
+  // the AP needs no configuration at all and is what the vehicle will use in
+  // the field.
   Serial.println();
-  Serial.println(F("  spare pins, for choosing a matched pair:"));
-  for (size_t i = 0; i < sizeof(kSurveyPins); i++) {
-    Serial.printf("    GPIO%-2d = %d %s\n", kSurveyPins[i], g_survey[i],
-                  g_survey_unstable[i] ? "  <-- CHANGING, driven by something else" : "");
+  if (net_begin_sta()) {
+    g_ap_mode = false;
+  } else {
+    Serial.println(F("[net] falling back to SoftAP"));
+    if (!net_begin_ap()) halt_blinking("no network");
+    g_ap_mode = true;
   }
 
-  Serial.println();
-  Serial.println(F("*** WHEELS OFF THE GROUND ***"));
-  Serial.println();
-  Serial.println(F("Looping sequence:"));
-  Serial.println(F("   1/4  both forward           5 s"));
-  Serial.println(F("   2/4  both backward          5 s"));
-  Serial.println(F("   3/4  A forward, B backward  5 s"));
-  Serial.println(F("   4/4  A backward, B forward  5 s"));
-  Serial.println();
-  Serial.println(F("SPACE pause/resume   +/- throttle   r restart   any other key = stop"));
-  Serial.printf("Throttle %d of %d, duty ceiling %.0f%%.\n", g_throttle, MOTOR_SCALE,
-                MOTOR_MAX_DUTY * 100.0f);
-  Serial.println();
-  Serial.printf("Connect VM to the battery now. Starting in %lu s...\n", ARM_DELAY_MS / 1000);
+  // One server for now: the viewer page and the stream share port 80, which is
+  // fine while nothing else needs to answer. When the control channel arrives
+  // the stream moves to its own instance on STREAM_PORT, because an MJPEG
+  // response never ends and would otherwise occupy the only worker.
+  if (!stream_server_begin(80, /*with_index=*/true)) halt_blinking("stream server failed");
 
-  g_boot_ms = millis();
-  g_phase = 0;
-  g_phase_start = g_boot_ms;
+  Serial.println();
+  Serial.printf("  open  %s  in a browser\n", stream_url().c_str());
+  if (g_ap_mode) {
+    Serial.printf("  (join the \"%s\" network first)\n", AP_SSID);
+  }
+  Serial.println(F("  keys: 1-5 size | q/Q quality | a adaptive | v flip | h mirror | p status"));
+  Serial.println();
 }
 
 void loop() {
   poll_serial();
 
-  const uint32_t now = millis();
+  // Fast blink while a client is pulling frames.
+  board_led_heartbeat(stream_server_has_client() ? 250 : 1500);
 
-  // Arming countdown, so there is time to connect VM and get hands clear
-  // before anything turns.
-  if (!g_armed) {
-    static uint32_t last_count = 0;
-    const uint32_t elapsed = now - g_boot_ms;
-    if (elapsed >= ARM_DELAY_MS) {
-      g_armed = true;
-      g_running = true;
-      Serial.println(F("\n*** RUNNING ***"));
-      enter_phase(0);
-    } else if (now - last_count >= 1000) {
-      last_count = now;
-      Serial.printf("   %lu...\n", (ARM_DELAY_MS - elapsed + 999) / 1000);
-    }
+  // Print unconditionally. Only printing while a client is attached hides the
+  // connect/disconnect churn, which is exactly what you need to see when a
+  // stream is failing and the browser is silently retrying.
+  static uint32_t last = 0;
+  if (millis() - last >= 2000) {
+    last = millis();
+    print_status();
   }
 
-  if (g_running && (now - g_phase_start >= kPhases[g_phase].ms)) {
-    enter_phase(g_phase + 1);
-  }
-
-  // Fixed-rate control tick. motors_set() is called every tick even when the
-  // command is zero: it also feeds the failsafe timer, so going quiet has to
-  // mean "the controller is gone", not "the controller wants a stop".
-  static uint32_t last_tick = 0;
-  const uint32_t tick_period = 1000 / MOTOR_TICK_HZ;
-  if (now - last_tick >= tick_period) {
-    last_tick = now;
-
-    if (g_running) {
-      const Phase &p = kPhases[g_phase];
-      motors_set((int16_t)(p.l * g_throttle), (int16_t)(p.r * g_throttle));
-    } else {
-      motors_set(0, 0);
-    }
-    motors_tick();
-  }
-
-  const bool moving = motors_applied_left() != 0 || motors_applied_right() != 0;
-  board_led_heartbeat(moving ? 150 : 1200);
-
-  // Countdown, so a finished phase is distinguishable from a stalled motor.
-  static uint32_t last_log = 0;
-  if (g_running && now - last_log >= 1000) {
-    last_log = now;
-    if (kPhases[g_phase].expect != nullptr) {
-      const uint32_t left_ms = kPhases[g_phase].ms - (now - g_phase_start);
-      Serial.printf("      %lus   applied A %+5d  B %+5d\n", (left_ms + 999) / 1000,
-                    motors_applied_left(), motors_applied_right());
-    }
-  }
-
-  delay(5);
+  delay(10);
 }

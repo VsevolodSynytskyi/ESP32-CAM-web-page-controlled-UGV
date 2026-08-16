@@ -3,9 +3,9 @@
 Tank-style tracked UGV: AI-Thinker ESP32-CAM on an ESP32-CAM-MB USB shield, two
 DC motors through a TB6612FNG, 2S 18650 pack through a 5V buck converter.
 
-**Current state: motor wiring and control verification.** The firmware runs a
-looping four-phase motor pattern so the wiring can be confirmed by watching the
-wheels. Camera streaming and the phone web UI come next.
+**Current state: camera bring-up and MJPEG streaming.** Motor wiring and control
+are verified and the driver is parked. The phone web UI with throttle control
+comes next.
 
 ---
 
@@ -22,31 +22,36 @@ pio run -t upload -t monitor
 
 ### What it does
 
-Loops forever, with a 1.5 s stop between phases so transitions are obvious:
+1. Parks the motor driver inputs and prints their reset levels
+2. Brings up the OV2640 and reports one frame over serial
+3. Joins WiFi — **station mode** if `include/secrets.h` exists with credentials,
+   otherwise falls back to hosting a **SoftAP** (`AP_SSID` in `config.h`)
+4. Serves MJPEG at `/stream`, with a bare viewer page at `/`
 
-| Phase | Duration | Expect |
-|---|---|---|
-| 1/4 both forward | 5 s | both wheels turning the **same** way |
-| 2/4 both backward | 5 s | both reversed, still matching |
-| 3/4 A fwd, B back | 5 s | wheels turning **opposite** ways |
-| 4/4 A back, B fwd | 5 s | opposite again, both flipped |
+The camera comes up before the radio deliberately: if the sensor is faulty the
+firmware halts there, so a camera fault can never be mistaken for a network one.
 
-Five-second arming countdown at boot before the first movement.
+Open the URL printed on the serial monitor. For station mode, copy
+`include/secrets.h.example` to `include/secrets.h` and fill in a **2.4 GHz**
+network — the ESP32 cannot see a 5 GHz-only one.
 
 | Key | Action |
 |---|---|
-| `SPACE` | pause / resume (pause stops immediately, bypassing the slew limiter) |
-| `+` / `-` | throttle ±100 |
-| `r` | restart at phase 1 |
-| any other | emergency stop |
+| `1`–`5` | frame size: QVGA / VGA / SVGA / XGA / SXGA |
+| `q` / `Q` | JPEG quality worse (smaller, faster) / better (bigger, slower) |
+| `v` / `h` | vertical flip / horizontal mirror — set these once the camera is mounted |
+| `p` | status |
 
-### Fixing what you see
+Persist whatever settles well into `CAM_*` in `include/config.h`.
 
-| Symptom | Fix |
+### Troubleshooting
+
+| Symptom | Cause |
 |---|---|
-| A motor runs the wrong way | `MOTOR_INVERT_L` / `MOTOR_INVERT_R` in `include/config.h` |
-| Wrong track responds | swap motor leads between AO and BO, or swap the `PIN_AIN*` / `PIN_BIN*` pairs |
-| Buzzes but doesn't turn | below its start threshold — press `+`, then record `MOTOR_MIN_MOVE_*` |
+| `sensor not detected` | ribbon cable not fully seated or latch open; or the 5 V rail sags — the OV2640 browns out more easily than the ESP32 |
+| `psram : NOT FOUND` | camera falls back to a single QVGA DRAM buffer; check `-DBOARD_HAS_PSRAM` |
+| `INVALID - try lowering CAM_XCLK_HZ` | torn frames; drop `CAM_XCLK_HZ` to 16500000, then 10000000 |
+| Very low fps | check `RSSI` in the status line, and the antenna-select solder jumper by the U.FL connector — a board set to *external* with no antenna has terrible range |
 
 ---
 

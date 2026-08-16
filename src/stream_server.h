@@ -10,7 +10,16 @@
 // while steering. Two instances is why the official CameraWebServer is built
 // this way.
 //
-// Serves GET /stream as multipart/x-mixed-replace.
+// Two video transports are served, and the viewer page can switch between them
+// at runtime so they can be compared on one device:
+//
+//   GET /stream   multipart/x-mixed-replace MJPEG. Efficient, no per-frame HTTP
+//                 overhead. Works in Chrome and Firefox.
+//   GET /jpg      one JPEG per request; the client asks for the next as soon as
+//                 the current decodes. Costs a request per frame but is plain
+//                 HTTP, which every browser handles - including iOS Safari,
+//                 which is unreliable with x-mixed-replace and is the only
+//                 engine available on iOS.
 
 // port          - STREAM_PORT (81) alongside the web server, or 80 in Stage 1b
 //                 where nothing else is listening.
@@ -27,3 +36,25 @@ float stream_server_fps();
 
 // True while a client is consuming the stream.
 bool stream_server_has_client();
+
+// Per-frame averages over the last second. This is the diagnosis when the
+// stream is slow, and the three numbers point at three different culprits:
+//
+//   grab_ms  the camera / JPEG encoder
+//   send_ms  the radio
+//   gap_ms   dead time waiting to be asked for the next frame - the client,
+//            or the server refusing connections
+//
+// Any pointer may be null.
+void stream_server_timing(uint32_t *grab_ms, uint32_t *send_ms, uint32_t *avg_bytes,
+                          uint32_t *gap_ms);
+
+// Adaptive JPEG quality. Frame SIZE is what matters on this link: the Arduino
+// framework's prebuilt lwip fixes the TCP send buffer at 5760 bytes, so a frame
+// that fits inside it costs one window round trip and a frame twice that size
+// costs two. JPEG size swings widely with scene detail, so a fixed quality
+// cannot hold that budget - this walks quality to keep frames under the window.
+// On by default; the q/Q serial keys turn it off and take manual control.
+void stream_server_set_adaptive(bool on);
+bool stream_server_adaptive();
+int stream_server_quality();
