@@ -15,11 +15,9 @@
 //
 //  *** WHEELS OFF THE GROUND ***
 //
-//  Safe power order, required until the pull-down resistors are fitted:
-//
-//      1. VM disconnected from the battery
-//      2. upload, wait for the banner
-//      3. connect VM
+//  VM can stay connected permanently, including during uploads. The motor pins
+//  are paired by their boot-default levels so that each channel reads as a stop
+//  before firmware runs - see the note above PIN_AIN1 in config.h.
 //
 //  Keys:
 //      SPACE          pause / resume  (pausing stops the motors immediately)
@@ -131,17 +129,71 @@ static void poll_serial() {
   }
 }
 
+// Levels sampled off the driver inputs before anything reconfigures them.
+static int g_boot_ain1, g_boot_ain2, g_boot_bin1, g_boot_bin2;
+
+// Every other pin this board breaks out, so the pairing can be chosen from
+// measured levels rather than datasheet defaults. GPIO13's documented pull-up
+// turned out not to hold here, so nothing is assumed any more.
+static const uint8_t kSurveyPins[] = {4, 13, 16};
+static int g_survey[sizeof(kSurveyPins)];
+static bool g_survey_unstable[sizeof(kSurveyPins)];
+
+static const char *pair_verdict(int in1, int in2) {
+  if (in1 == in2) return in1 ? "(H,H) short brake - safe" : "(L,L) coast - safe";
+  return "(H,L) or (L,H)  *** DRIVE COMMAND - motor runs during boot ***";
+}
+
 void setup() {
-  // Absolutely first, before Serial or anything else. Until this runs, the
-  // ESP32's reset defaults hold GPIO13/14/15 weakly high and GPIO2 weakly low,
-  // and a mismatched pair reads to the TB6612 as a drive command. Every
-  // millisecond before this call is a millisecond a track may be running at
-  // full battery voltage.
+  // Sample the reset-default levels first. Nothing has configured these pins
+  // yet, so this is exactly what the TB6612 has been seeing since the core came
+  // out of reset. Four register reads, a few microseconds - it does not
+  // meaningfully delay motors_begin() below.
+  g_boot_ain1 = digitalRead(PIN_AIN1);
+  g_boot_ain2 = digitalRead(PIN_AIN2);
+  g_boot_bin1 = digitalRead(PIN_BIN1);
+  g_boot_bin2 = digitalRead(PIN_BIN2);
+
+  // Survey the spare pins too. Each is sampled repeatedly: a pin that keeps
+  // changing is being driven by something else, which for GPIO16 would be
+  // direct evidence that it really is the PSRAM chip-select.
+  for (size_t i = 0; i < sizeof(kSurveyPins); i++) {
+    const int first = digitalRead(kSurveyPins[i]);
+    bool changed = false;
+    for (int n = 0; n < 64; n++) {
+      if (digitalRead(kSurveyPins[i]) != first) changed = true;
+    }
+    g_survey[i] = first;
+    g_survey_unstable[i] = changed;
+  }
+
+  // Absolutely first after that, before Serial or anything else. Until this
+  // runs, the pins sit at their reset defaults and a mismatched pair reads to
+  // the TB6612 as a drive command. Every millisecond before this call is a
+  // millisecond a track may be running at full battery voltage.
   motors_begin();
 
   board_begin("motor wiring check");
   board_led_begin();
   motors_log_config();
+
+  // What the driver actually saw during the boot window. This is measured, not
+  // assumed - the ESP32's documented reset defaults can be overridden by
+  // anything else on the pin, and GPIO2/12/13/14 are also the SD_MMC lines, so
+  // an inserted microSD card loads them.
+  Serial.println();
+  Serial.println(F("--- pin levels at reset, before firmware touched them ---"));
+  Serial.printf("  A: AIN1 GPIO%-2d = %d   AIN2 GPIO%-2d = %d   %s\n", PIN_AIN1, g_boot_ain1,
+                PIN_AIN2, g_boot_ain2, pair_verdict(g_boot_ain1, g_boot_ain2));
+  Serial.printf("  B: BIN1 GPIO%-2d = %d   BIN2 GPIO%-2d = %d   %s\n", PIN_BIN1, g_boot_bin1,
+                PIN_BIN2, g_boot_bin2, pair_verdict(g_boot_bin1, g_boot_bin2));
+  Serial.println(F("  (a channel only stays still if its two inputs MATCH)"));
+  Serial.println();
+  Serial.println(F("  spare pins, for choosing a matched pair:"));
+  for (size_t i = 0; i < sizeof(kSurveyPins); i++) {
+    Serial.printf("    GPIO%-2d = %d %s\n", kSurveyPins[i], g_survey[i],
+                  g_survey_unstable[i] ? "  <-- CHANGING, driven by something else" : "");
+  }
 
   Serial.println();
   Serial.println(F("*** WHEELS OFF THE GROUND ***"));

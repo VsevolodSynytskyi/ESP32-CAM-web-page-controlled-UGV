@@ -16,7 +16,8 @@
 //
 //  PWMA, PWMB, STBY and VCC are tied permanently to 3.3V on the vehicle; the
 //  PWM lives on the direction pins instead. That keeps GPIO16 free (it is the
-//  PSRAM chip-select on this module - driving it corrupts the camera
+//  reportedly the PSRAM chip-select on modules with 4 MB PSRAM, in which case
+//  driving it would corrupt the camera
 //  framebuffer) and keeps GPIO12 free (pulled high at boot it sets VDD_SDIO to
 //  1.8V and the board appears dead).
 //
@@ -24,27 +25,59 @@
 //  32, 34, 35, 36, 39. GPIO1/3 are the MB shield's serial port. GPIO4 is the
 //  flash LED. That leaves exactly 2, 12, 13, 14, 15 - and we use four of them.
 // ---------------------------------------------------------------------------
-//  Which GPIO drives which input is pure convention - all four are ordinary
-//  LEDC outputs and none is bound to a particular TB6612 pin. Rewire freely and
-//  change these four lines to match; nothing else in the project cares.
-#define PIN_AIN1 14  // motor A (motor 1, on AO1/AO2) direction 1
-#define PIN_AIN2 2   // motor A (motor 1, on AO1/AO2) direction 2  <- strapping, see below
-#define PIN_BIN1 15  // motor B (motor 2, on BO1/BO2) direction 1
-#define PIN_BIN2 13  // motor B (motor 2, on BO1/BO2) direction 2
-
-// GPIO2 is a strapping pin: held high at boot the chip refuses download mode
-// and uploads fail. Measured 0.6 Mohm from every TB6612 input to VCC on this
-// build, i.e. no pull-up, so it sits low and download mode works. If uploads
-// ever start failing only once the driver is connected, that is this pin -
-// move it to GPIO12 and change the line above.
+//  PAIRED BY BOOT STATE - do not reshuffle these without re-reading the note.
 //
-// EXTERNAL PULL-DOWNS ARE REQUIRED: 4.7k from each of AIN1/AIN2/BIN1/BIN2 to
-// GND. The TB6612FNG does NOT pull its inputs down, and the ESP32's own reset
-// defaults are not uniform - GPIO13/14/15 come up weakly HIGH while GPIO2 comes
-// up weakly LOW. Any pair that ends up mismatched reads as a drive command, so
-// one track would run at full throttle from power-on until motors_begin()
-// executes - including for the whole duration of every firmware upload.
-// The resistors force all four low so both channels idle in coast.
+//  Before motors_begin() runs, these pins are inputs sitting at whatever level
+//  reset leaves them at, and the TB6612 is already awake (STBY and PWMA/B are
+//  tied to 3V3). Whatever that level happens to be IS a command to the driver.
+//
+//  These levels were MEASURED on this board by reading the pins at the top of
+//  setup(), not taken from the datasheet - GPIO13's documented pull-up does not
+//  hold here, and trusting the documentation cost us a motor that ran at full
+//  throttle through every boot:
+//
+//      HIGH: 14, 15, 16          LOW: 2, 4, 12, 13
+//
+//  So each channel gets a MATCHED pair, which the TB6612 truth table reads as a
+//  stop rather than a drive:
+//
+//      channel A = 14 + 15 -> (H,H) -> short brake
+//      channel B = 12 +  2 -> (L,L) -> coast
+//
+//  Neither turns a motor. This is why no external pull-down resistors are
+//  needed: the pin choice does the job on its own, for free, and it holds
+//  through power-on, watchdog resets, brownouts, and the whole duration of a
+//  firmware upload (when the chip sits in download mode and never reaches our
+//  code at all).
+//
+//  Mixing a high pin with a low pin on the same channel gives (H,L), a
+//  full-throttle drive command. That is the failure this layout exists to
+//  prevent, so keep {14,15} together and {2,12} together.
+//
+//  If you ever change these pins, re-run the boot-level survey printed by
+//  main.cpp and pair from what it reports. Do not pair from a datasheet.
+#define PIN_AIN1 14  // motor A (motor 1, on AO1/AO2) direction 1
+#define PIN_AIN2 15  // motor A (motor 1, on AO1/AO2) direction 2
+#define PIN_BIN1 12  // motor B (motor 2, on BO1/BO2) direction 1  <- strapping, see below
+#define PIN_BIN2 2   // motor B (motor 2, on BO1/BO2) direction 2  <- strapping, see below
+
+// GPIO13 is now unused and free. Leave it unconnected.
+//
+// GPIO15 is a strapping pin, but the only documented consequence of it being
+// low at boot is losing the ROM startup log - cosmetic, and it measures high
+// here anyway. We only drive it after boot, so the strap is never affected.
+
+// Both strapping pins on channel B want to be LOW at boot, which is exactly the
+// state this layout puts them in:
+//
+//   GPIO2  high at boot -> the chip refuses download mode and uploads fail
+//   GPIO12 high at boot -> VDD_SDIO drops to 1.8V and the board appears dead
+//
+// Measured 0.6 Mohm from every TB6612 input to VCC on this build, i.e. no
+// pull-up anywhere, so both sit low on their internal pull-downs. If the board
+// ever stops booting or stops accepting uploads once the driver is connected,
+// suspect these two pins first - a 10k resistor to GND on each removes all
+// doubt, though it should not be necessary.
 
 // ---------------------------------------------------------------------------
 //  LEDC (hardware PWM) channels

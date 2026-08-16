@@ -58,54 +58,108 @@ permanently to **3.3V**, with the PWM on the direction pins instead.
 | ESP32-CAM | TB6612FNG |
 |---|---|
 | GPIO14 | AIN1 — channel A (motor 1) |
-| GPIO2 | AIN2 — channel A |
-| GPIO15 | BIN1 — channel B (motor 2) |
-| GPIO13 | BIN2 — channel B |
+| GPIO15 | AIN2 — channel A |
+| GPIO12 | BIN1 — channel B (motor 2) |
+| GPIO2 | BIN2 — channel B |
 | 3V3 | PWMA, PWMB, STBY, VCC |
 | GND | GND (star point at the battery hub) |
 | — | VM ← 2S+, with 1000 µF bulk cap |
-| 4.7 kΩ each | AIN1, AIN2, BIN1, BIN2 → GND (**required**, see below) |
 
-**GPIO12 and GPIO16 must be left unconnected.**
+**GPIO13 and GPIO16 must be left unconnected.**
 
-Which GPIO drives which input is arbitrary — all four are plain LEDC outputs.
-Rewire as convenient and edit the four `PIN_*` lines in `include/config.h`.
+The pin pairing is deliberate — see below. No pull-down resistors are needed.
 
-### Why only these pins are available
+### ESP32-CAM pin reference
 
-The camera occupies GPIO 0, 5, 18, 19, 21, 22, 23, 25, 26, 27, 32, 34, 35, 36,
-39. GPIO1/3 are the MB shield's serial. GPIO4 is the flash LED. **GPIO16 is the
-PSRAM chip-select** — driving it corrupts the camera framebuffer. That leaves
-2, 12, 13, 14, 15, and GPIO12 high at boot sets VDD_SDIO to 1.8 V and the board
-appears dead.
+Every pin the board actually breaks out. Everything not listed — GPIO 5, 18, 19,
+21, 22, 23, 25, 26, 27, 32, 34, 35, 36, 39 — is consumed by the camera.
 
-Four usable pins is exactly why the driver runs in the 4-pin scheme. The
-conventional 6-pin wiring would force spending GPIO16 (losing PSRAM, so no VGA
-framebuffer) or GPIO4 (a strobing headlight).
+| Label | GPIO | Safe to use? | Reason | Our use |
+|---|---|:---:|---|---|
+| D0 | 0 | ⚠️ | must be HIGH during boot and LOW for flashing | camera XCLK |
+| TX0 | 1 | ❌ | Tx pin, used for flashing and debugging | MB shield serial |
+| D2 | 2 | ⚠️ | must be LOW during boot, cannot be used when microSD card is present | **BIN2** |
+| RX0 | 3 | ❌ | Rx pin, used for flashing and debugging | MB shield serial |
+| D4 | 4 | ⚠️ | connected to the on-board Flash LED, cannot be used when microSD card is present | free — future headlight |
+| D12 | 12 | ⚠️ | must be LOW during boot, cannot be used when microSD card is present | **BIN1** |
+| D13 | 13 | ⚠️ | cannot be used when microSD card is present | free — candidate for STBY |
+| D14 | 14 | ⚠️ | cannot be used when microSD card is present | **AIN1** |
+| D15 | 15 | ⚠️ | must be HIGH during boot, prevents startup log if pulled LOW, cannot be used when microSD card is present | **AIN2** |
+| RX2 | 16 | ✅ | — | left unconnected, see note |
 
-### ⚠️ The pull-down resistors are not optional
+**Keep the microSD slot empty.** Six of these pins are the SD_MMC lines. An
+inserted card loads them and changes their levels at reset — which is exactly
+what the boot-state pairing above depends on. A card in the slot can silently
+turn a safe `(H,H)` pair into a `(H,L)` drive command.
 
-The TB6612FNG does not pull its inputs down, and the ESP32's reset defaults are
-not uniform: GPIO13/14/15 come up weakly **high**, GPIO2 comes up weakly **low**.
-Any mismatched pair reads as a drive command, so one track runs at **full
-throttle** from power-on until `motors_begin()` executes — including for the
-entire duration of every firmware upload, since the chip sits in download mode
-and never reaches your code. Put the vehicle on the floor, hit Upload, and it
-drives off.
+**GPIO16 is disputed.** The table marks it usable and says nothing about PSRAM,
+but on modules carrying 4 MB PSRAM it is widely reported to be the PSRAM
+chip-select, in which case driving it would corrupt the camera framebuffer. We
+don't need it, so it stays unconnected rather than settling the argument.
 
-4.7 kΩ from each input to GND beats the ESP's ~45 kΩ internal pull-ups (0.31 V,
-well under the 0.8 V threshold) and costs 0.7 mA when driven. No arrangement of
-GPIO 2/13/14/15 avoids this — three default high, only one defaults low.
+**GPIO15's "must be HIGH" is softer than it sounds** — the stated consequence of
+pulling it low is only losing the ROM startup log, which is cosmetic. That is why
+it is a viable home for `STBY` if we add a hardware kill line.
 
-Until they are fitted, use this order every time:
+Four comfortably usable pins is exactly why the driver runs in the 4-pin scheme.
+The conventional 6-pin wiring would force spending GPIO16 or GPIO4 as well.
 
-1. **VM disconnected** from the battery
-2. Upload, wait for the banner
-3. **Then** connect VM
+### The pins are paired by boot state — don't reshuffle them
 
-`motors_begin()` is the first statement in `setup()` for the same reason, which
-shrinks the window to bootloader time — but firmware cannot help during an
-upload.
+Before `motors_begin()` runs, these pins are inputs sitting at whatever level
+reset leaves them at, and the TB6612 is already awake because `STBY` and
+`PWMA`/`PWMB` are tied to 3V3. Whatever that level happens to be *is* a command
+to the driver. And the levels aren't uniform:
+
+| **LOW** at reset | **HIGH** at reset |
+|---|---|
+| GPIO2, GPIO4, GPIO12, GPIO13 | GPIO14, GPIO15, GPIO16 |
+
+**These were measured, not taken from the datasheet.** GPIO13 is documented as
+having a reset pull-up and does not on this board — trusting that cost us a
+motor running at full throttle through every boot. `main.cpp` prints this survey
+at startup; if you change pins, pair from what it reports.
+
+So each channel gets a **matched** pair, which the truth table reads as a stop:
+
+| Channel | Pins | Boot state | Result |
+|---|---|---|---|
+| A | 14 + 15 | `(H, H)` | short brake |
+| B | 12 + 2 | `(L, L)` | coast |
+
+Neither turns a motor. This is why there are no pull-down resistors: the pin
+choice does it for free, and it holds through power-on, watchdog resets,
+brownouts, and the **entire duration of a firmware upload** — when the chip sits
+in download mode and never reaches our code at all.
+
+Mixing a high pin with a low pin on one channel gives `(H, L)`, which is a
+full-throttle drive command. Put the vehicle on the floor, hit Upload, and it
+drives off — and a brownout under load becomes a reset, which becomes full
+throttle, which deepens the brownout. Keep `{14,15}` together and `{2,12}`
+together.
+
+**This does not cover holding RST down.** While EN is held low the core never
+comes out of reset, so no pull is applied at all and every pin floats — the
+TB6612 then sees garbage and a motor may run. Tapping RST or a normal reset is a
+millisecond of this; holding it is unbounded. Closing that gap needs one
+external resistor, and the place to put it is `STBY`: wire `STBY` to GPIO13
+(now free) with 4.7 kΩ to GND, and have `motors_begin()` raise it. `STBY` low
+disables the driver outright regardless of all four inputs. Not currently done.
+
+Both strapping pins landed on channel B, and both want to be **low** at boot —
+which is exactly what this layout gives them:
+
+| Pin | If high at boot |
+|---|---|
+| GPIO2 | chip refuses download mode, uploads fail |
+| GPIO12 | VDD_SDIO drops to 1.8 V, board appears dead |
+
+Measured 0.6 MΩ from every TB6612 input to VCC on this build, so nothing pulls
+them up. If the board ever stops booting or stops accepting uploads once the
+driver is connected, suspect these two first — 10 kΩ to GND on each removes all
+doubt, though it shouldn't be necessary.
+
+`motors_begin()` is still the first statement in `setup()`, as defence in depth.
 
 ### Power
 

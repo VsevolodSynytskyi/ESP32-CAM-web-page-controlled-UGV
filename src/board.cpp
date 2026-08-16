@@ -44,14 +44,14 @@ void board_begin(const char *stage_name) {
 
   // PSRAM is what makes VGA framebuffers possible. Zero here means either the
   // board definition lost -DBOARD_HAS_PSRAM, or GPIO16 got wired to something
-  // (it is the PSRAM chip-select on this module).
+  // (reportedly the PSRAM chip-select on 4 MB PSRAM modules).
   if (ESP.getPsramSize() > 0) {
     Serial.printf(" psram free   : %u KB of %u KB\n",
                   (unsigned)(ESP.getFreePsram() / 1024),
                   (unsigned)(ESP.getPsramSize() / 1024));
   } else {
     Serial.println(F(" psram        : NOT FOUND  <-- camera will be limited to tiny frames"));
-    Serial.println(F("                check -DBOARD_HAS_PSRAM, and that GPIO16 is unwired"));
+    Serial.println(F("                check -DBOARD_HAS_PSRAM, and unwire GPIO16 if used"));
   }
   Serial.println(F("========================================"));
   Serial.println();

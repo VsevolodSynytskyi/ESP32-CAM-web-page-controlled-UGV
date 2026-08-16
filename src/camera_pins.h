@@ -10,7 +10,7 @@
 //  Kept as our own copy rather than reaching into the framework's examples
 //  directory, which is not on the include path and moves between core versions.
 //
-//  These 15 pins plus GPIO1/3 (serial) and GPIO16 (PSRAM chip-select) are why
+//  These 15 pins plus GPIO1/3 (serial) and GPIO16 (reportedly PSRAM CS) are why
 //  only GPIO 2, 12, 13, 14, 15 are left for the motor driver.
 // ===========================================================================
 
