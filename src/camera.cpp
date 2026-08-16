@@ -42,12 +42,19 @@ bool camera_begin() {
   c.pixel_format = PIXFORMAT_JPEG;
   c.sccb_i2c_port = -1;
 
+  c.sccb_i2c_port = 0;
+
   if (psramFound()) {
-    // The normal path. Two buffers in PSRAM plus GRAB_LATEST is what keeps the
-    // stream live: the encoder always hands the HTTP task the newest frame
-    // rather than working through a backlog.
-    c.frame_size = CAM_FRAMESIZE;
-    c.jpeg_quality = CAM_JPEG_QUALITY;
+    // Initialise at the LARGEST size PSRAM can hold, then drop to the working
+    // size immediately after. The driver sizes its DMA descriptors and frame
+    // buffers once, at init, from this value - so starting large means any
+    // later switch down always fits, with no reallocation. Taken from the
+    // MJPEG2SD reference, which does the same thing for the same reason.
+    framesize_t max_fs = FRAMESIZE_SVGA;
+    if (ESP.getPsramSize() > 3 * 1024 * 1024) max_fs = FRAMESIZE_UXGA;
+
+    c.frame_size = max_fs;
+    c.jpeg_quality = 10;
     c.fb_count = CAM_FB_COUNT;
     c.fb_location = CAMERA_FB_IN_PSRAM;
     c.grab_mode = CAMERA_GRAB_LATEST;
@@ -84,7 +91,14 @@ bool camera_begin() {
   }
 
   Serial.printf("[cam] sensor PID 0x%02x initialised at %s\n", s->id.PID,
-                s_degraded ? "QVGA/DRAM (degraded)" : "configured size in PSRAM");
+                s_degraded ? "QVGA/DRAM (degraded)" : "max size in PSRAM");
+
+  // Now drop to the working size. Buffers were already allocated for the
+  // maximum above, so this is just a sensor register change.
+  if (!s_degraded) {
+    camera_set_framesize(CAM_FRAMESIZE);
+    camera_set_quality(CAM_JPEG_QUALITY);
+  }
 
   camera_set_vflip(CAM_VFLIP != 0);
   camera_set_hmirror(CAM_HMIRROR != 0);

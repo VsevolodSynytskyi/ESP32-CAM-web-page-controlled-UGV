@@ -205,9 +205,12 @@
 // carry it.
 #define CAM_JPEG_QUALITY 14
 
-// Two buffers are required for CAMERA_GRAB_LATEST, which is what keeps the
-// video feeling live instead of trailing half a second behind.
-#define CAM_FB_COUNT 2
+// Four, matching the MJPEG2SD reference. CAMERA_GRAB_LATEST needs at least two,
+// but with only two the driver has a single spare while we hold one during a
+// send - so a slow send starves the pipeline and the next frame handed back is
+// stale. Extra buffers let the sensor keep cycling and keep the newest frame
+// genuinely new, which matters more for latency than for throughput.
+#define CAM_FB_COUNT 4
 
 // Image orientation. Set these once the camera is bolted to the chassis - the
 // module is frequently mounted upside down or facing backwards, and flipping in

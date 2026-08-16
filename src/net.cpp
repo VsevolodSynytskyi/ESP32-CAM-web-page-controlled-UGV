@@ -128,14 +128,11 @@ bool net_begin_ap() {
     return false;
   }
 
+  // Modem sleep off is the only radio setting we touch. The MJPEG2SD reference
+  // does no WiFi tuning whatsoever and reaches 15 fps at SVGA, so anything
+  // beyond this is a variable it does not carry - and every one I added while
+  // chasing this made the system harder to reason about, not faster.
   WiFi.setSleep(false);
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);
-
-  // Drop 802.11b. Its lowest rates are 1-2 Mbit/s, and a single b-rate frame
-  // occupies airtime that would carry many times the data at n rates - which is
-  // exactly the wrong trade on a contended channel. Every phone from the last
-  // fifteen years speaks g/n.
-  esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
 
   Serial.printf("[net] AP up. Join \"%s\" and open http://%s/\n", AP_SSID,
                 WiFi.softAPIP().toString().c_str());

@@ -141,6 +141,25 @@ static void poll_serial() {
         Serial.printf("adaptive quality %s\n", stream_server_adaptive() ? "ON" : "OFF");
         break;
 
+      // Cycle WiFi transmit power. This is the supply test, and the logic is
+      // backwards from intuition: at RSSI -17 dBm there is ~60 dB of margin, so
+      // turning the radio DOWN cannot hurt the link - but it substantially cuts
+      // the current spike on every transmit. If a weak supply is browning out
+      // the PA mid-packet, less power means fewer lost packets means FASTER
+      // throughput. An improvement here convicts the power supply; no change
+      // exonerates it.
+      case 't': {
+        static const wifi_power_t levels[] = {WIFI_POWER_19_5dBm, WIFI_POWER_15dBm,
+                                              WIFI_POWER_11dBm, WIFI_POWER_8_5dBm,
+                                              WIFI_POWER_5dBm};
+        static const char *names[] = {"19.5", "15", "11", "8.5", "5"};
+        static int idx = 0;
+        idx = (idx + 1) % 5;
+        WiFi.setTxPower(levels[idx]);
+        Serial.printf("\n*** tx power %s dBm *** watch the send time\n", names[idx]);
+        break;
+      }
+
       case 'v':
         g_vflip = !g_vflip;
         camera_set_vflip(g_vflip);
@@ -215,7 +234,7 @@ void setup() {
   if (g_ap_mode) {
     Serial.printf("  (join the \"%s\" network first)\n", AP_SSID);
   }
-  Serial.println(F("  keys: 1-5 size | q/Q quality | a adaptive | v flip | h mirror | p status"));
+  Serial.println(F("  keys: 1-5 size | q/Q quality | a adaptive(off) | t TX power | v/h flip | p status"));
   Serial.println();
 }
 

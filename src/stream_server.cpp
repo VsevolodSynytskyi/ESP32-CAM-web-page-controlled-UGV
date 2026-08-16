@@ -93,8 +93,10 @@ static void note_frame(uint32_t grab_ms, uint32_t send_ms, size_t bytes) {
 // peer's delayed-ACK timer that costs hundreds of milliseconds per frame, which
 // on a video stream is the difference between fluid and a slideshow.
 static void set_nodelay(httpd_req_t *req) {
-  int one = 1;
-  setsockopt(httpd_req_to_sockfd(req), IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+  // Deliberately a no-op for now. The reference sets no socket options at all
+  // and reaches 15 fps, so this is one more difference to eliminate before
+  // blaming anything. Re-enable only with a before/after measurement.
+  (void)req;
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +116,7 @@ static void set_nodelay(httpd_req_t *req) {
 #define QUALITY_BEST 10
 #define QUALITY_WORST 45
 
-static bool s_adaptive = true;
+static bool s_adaptive = false;
 static int s_quality = CAM_JPEG_QUALITY;
 
 static void adapt_quality(size_t last_bytes) {
@@ -204,9 +206,18 @@ static void video_push_task(void *arg) {
     esp_camera_fb_return(fb);
 
     if (res != ESP_OK) {
-      Serial.printf("[ws] send failed: %s, dropping client\n", esp_err_to_name(res));
+      Serial.printf("[ws] send failed after %lu ms: %s, dropping client\n",
+                    (unsigned long)(t2 - t1), esp_err_to_name(res));
       s_ws_fd = -1;
       continue;
+    }
+
+    // Per-frame visibility. The one-second averages hide the shape of the
+    // problem: a run of 10 ms frames with one 3 s outlier averages to something
+    // that looks uniformly mediocre and points nowhere.
+    if (t2 - t1 > 400) {
+      Serial.printf("[ws] slow frame: %u bytes took %lu ms\n", (unsigned)len,
+                    (unsigned long)(t2 - t1));
     }
     note_frame(t1 - t0, t2 - t1, len);
     adapt_quality(len);
@@ -353,7 +364,7 @@ var v=document.getElementById('v'),f=document.getElementById('f'),
 // WebSocket push first. The send buffer in this build is about one frame, so
 // every round trip costs a frame - and push is the only transport here that
 // does not spend one per frame just being asked.
-var modes=['ws','poll','mjpeg'], mi=0, gen=0, n=0, t0=Date.now(), ws=null, prev=null;
+var modes=['mjpeg','ws','poll'], mi=0, gen=0, n=0, t0=Date.now(), ws=null, prev=null;
 
 function tick(){
   n++; var dt=(Date.now()-t0)/1000;
@@ -420,30 +431,11 @@ bool stream_server_begin(uint16_t port, bool with_index) {
   // 32768, so a second instance silently fails to start unless this is bumped.
   config.ctrl_port = 32768 + (port - 80);
 
-  // Poll mode makes a separate request per frame, so sockets churn constantly.
-  // Give them room. The httpd requires this to stay below LWIP_MAX_SOCKETS - 3,
-  // and CONFIG_LWIP_MAX_SOCKETS is 16 in this core's prebuilt sdkconfig.
-  config.max_open_sockets = 10;
-
-  // Purging MUST be on for poll mode. Without it, sockets from finished
-  // requests linger until they time out, the server hits max_open_sockets and
-  // starts REFUSING new connections, and the client stalls for seconds before
-  // recovering - producing bursts of frames separated by dead air rather than a
-  // steady rate.
-  //
-  // The tradeoff: this same mechanism can evict a live MJPEG stream, because
-  // the LRU tracks when a socket last *received* data and a stream only ever
-  // sends. Poll mode wins that argument - it is the transport iOS can actually
-  // use, and /stream stays available only for comparison on other browsers.
-  config.lru_purge_enable = true;
-
-  // Generous send timeout on purpose. A frame that takes seconds to go out is a
-  // problem to diagnose, not a client to disconnect - and dropping the socket
-  // mid-frame turns one slow send into a reconnect storm that looks far worse
-  // than the original fault.
-  config.recv_wait_timeout = 10;
-  config.send_wait_timeout = 10;
-
+  // Everything else stays at HTTPD_DEFAULT_CONFIG, matching the MJPEG2SD
+  // reference. Each override I added while debugging - socket counts, LRU
+  // purging, send timeouts - fixed the symptom in front of me and introduced a
+  // new variable. Defaults first; re-add individually only with a measurement
+  // that justifies it.
   config.max_uri_handlers = 6;
   config.close_fn = on_session_close;
 
