@@ -1,9 +1,8 @@
 // ===========================================================================
 //  ESP32-CAM web page controlled UGV
 //
-//  Live MJPEG video from an AI-Thinker ESP32-CAM over its own SoftAP.
-//  Motor control from the web page is the next stage; the driver inputs are
-//  parked here so the vehicle cannot move.
+//  Live MJPEG video from an AI-Thinker ESP32-CAM over its own SoftAP, with
+//  hold-to-run motor buttons on the same page.
 //
 //  Boot order is deliberate. Motors are parked before anything else can take
 //  time, and the camera comes up before the radio so a sensor fault halts with
@@ -19,6 +18,7 @@
 #include "motors.h"
 #include "net.h"
 #include "stream_server.h"
+#include "web_server.h"
 
 static bool g_ap_mode = false;
 
@@ -51,8 +51,12 @@ static void halt_blinking(const char *why) {
 void setup() {
   report_boot_pin_levels();
 
-  board_begin("camera + streaming");
+  board_begin("camera + streaming + motors");
   board_led_begin();
+
+  // Only now, with Serial up so the failsafe can say so. The pins have been
+  // parked since motors_begin() above; this starts enforcing that.
+  motors_start_task();
 
   if (!camera_begin()) halt_blinking("camera init failed");
   camera_warmup();
@@ -65,7 +69,8 @@ void setup() {
     g_ap_mode = true;
   }
 
-  if (!stream_server_begin(HTTP_PORT)) halt_blinking("stream server failed");
+  if (!web_server_begin(HTTP_PORT)) halt_blinking("web server failed");
+  if (!stream_server_begin(HTTP_PORT + 1)) halt_blinking("video server failed");
 
   const IPAddress ip = g_ap_mode ? WiFi.softAPIP() : WiFi.localIP();
   Serial.printf("\n  open http://%s/ in a browser", ip.toString().c_str());

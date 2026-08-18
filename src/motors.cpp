@@ -260,6 +260,21 @@ void motors_tick() {
   drive_pair(LEDC_CH_BIN1, LEDC_CH_BIN2, out_r);
 }
 
+static void motor_task(void *) {
+  const TickType_t period = pdMS_TO_TICKS(1000 / MOTOR_TICK_HZ);
+  TickType_t last = xTaskGetTickCount();
+  for (;;) {
+    motors_tick();
+    vTaskDelayUntil(&last, period);
+  }
+}
+
+void motors_start_task() {
+  // Priority 6 puts this above the HTTP servers (5), so a saturated stream
+  // cannot delay the failsafe. Core 1 keeps it off the WiFi/LWIP core.
+  xTaskCreatePinnedToCore(motor_task, "motors", 3072, nullptr, 6, nullptr, 1);
+}
+
 int16_t motors_target_left() { return s_target_l; }
 int16_t motors_target_right() { return s_target_r; }
 int16_t motors_applied_left() { return s_applied_l; }

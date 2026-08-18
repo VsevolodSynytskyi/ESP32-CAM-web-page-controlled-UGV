@@ -7,10 +7,11 @@ vehicle hosts its own WiFi network and streams live video to a phone browser.
 Chassis is undecided - the differential drive and the twin-slider control scheme
 suit tracks or skid-steer wheels equally, so nothing here assumes either.
 
-**Working:** camera, SoftAP, MJPEG video at VGA.
-**Next:** the web UI with twin spring-to-centre throttle sliders over WebSocket.
-Motor control, slew limiting and failsafe are written and tested; the driver
-inputs are parked at boot until the UI exists.
+**Working:** camera, SoftAP, MJPEG video at VGA, and hold-to-run motor test
+buttons on the page — forward and back per motor, enough to check the wiring,
+the direction of each side and the battery under load, all at once.
+**Next:** replacing those buttons with twin spring-to-centre throttle sliders.
+The firmware side is already the real thing; only `web_page.h` changes.
 
 ## Build
 
@@ -21,7 +22,23 @@ pio run -t upload -t monitor
 
 Join `UGV` (password `letmecontrolit`), open `http://192.168.4.1/`.
 
-Video is served from **port 81**, the page from port 80.
+Video is served from **port 81**, the page and control socket from port 80.
+
+### The test buttons
+
+Four buttons, forward and back for motor A and motor B, labelled to match the
+TB6612FNG silkscreen — when a motor turns the wrong way, the label has to name
+the thing you rewire. Press both forwards together to drive straight; press
+opposite ones to pivot.
+
+**Hold to run — nothing latches.** Releasing the button, sliding a thumb off it,
+backgrounding the page or losing WiFi all mean stop, and `motors_tick()` stops
+the vehicle by itself after `CMD_TIMEOUT_MS` (300 ms) if no command arrives. The
+page re-sends the held state at 10 Hz to stay ahead of that.
+
+Full press is `MOTOR_SCALE`, which `MOTOR_MAX_DUTY` then caps at 55% duty. The
+slew limiter ramps up over ~400 ms, so first power-on shouldn't brown out — if
+it does, that is the bulk capacitor, not the code.
 
 ---
 
@@ -68,8 +85,15 @@ one instance cost a measured 15×.
 
 | port | |
 |---|---|
-| 80 | viewer page |
+| 80 | viewer page, and `/control` WebSocket |
 | 81 | `/stream` |
+
+The control socket lives with the page rather than with the video for the same
+reason: it has to answer while a frame is going out. Handlers on port 80 must
+stay quick — they share one dispatch task with each other.
+
+Commands are **two signed bytes, left then right, each −100…+100**, with the
+sign carrying direction. That is the format the sliders will use unchanged.
 
 Each instance also needs its own `ctrl_port`; they all default to 32768, so a
 second instance silently fails to start unless it is bumped.
@@ -192,6 +216,11 @@ out the ESP; ramping toward zero runs ~4× faster so stops feel immediate.
 `CMD_TIMEOUT_MS` (300 ms), so a control channel going quiet can never mean
 "keep doing what you were doing".
 
+**The tick runs in its own task, above the HTTP servers.** The failsafe is only
+worth as much as the tick that enforces it, and `loop()` sits *below* the
+streaming task — a stall there would leave the last throttle latched on the
+motors for the duration. `motors_start_task()` pins it to core 1 at priority 6.
+
 ## Known constraints
 
 **No battery monitoring is possible.** All ADC1 pins are consumed by the camera
@@ -218,5 +247,7 @@ src/
   camera.{h,cpp}            sensor init and profile
   motors.{h,cpp}            LEDC, signed control, slew limiting, failsafe
   net.{h,cpp}               station + SoftAP, harmonic-aware channel choice
-  stream_server.{h,cpp}     viewer page on :80, MJPEG on :81
+  web_server.{h,cpp}        page and /control WebSocket on :80
+  web_page.h                the page: video, test buttons, control link
+  stream_server.{h,cpp}     MJPEG on :81
 ```

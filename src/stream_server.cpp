@@ -13,36 +13,8 @@
 static const char *kContentType = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
 static const char *kBoundary = "\r\n--" PART_BOUNDARY "\r\n";
 
-static httpd_handle_t s_pages = nullptr;
 static httpd_handle_t s_video = nullptr;
-static uint16_t s_video_port = 81;
 static volatile bool s_streaming = false;
-
-static const char kViewerHtml[] = R"HTML(<!DOCTYPE html><html><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>UGV GCS</title><style>
-html,body{margin:0;height:100%;background:#000;overflow:hidden}
-img{position:fixed;inset:0;width:100%;height:100%;object-fit:contain}
-</style></head><body>
-<img id="v" alt="">
-<script>
-// Video is on the next port up - see the two-instance note in stream_server.h.
-var v = document.getElementById('v');
-var url = 'http://' + location.hostname + ':' + (Number(location.port || 80) + 1) + '/stream';
-function start() { v.src = url + '?n=' + Date.now(); }
-v.onerror = function () { setTimeout(start, 1000); };
-start();
-</script></body></html>)HTML";
-
-static esp_err_t viewer_handler(httpd_req_t *req) {
-  httpd_resp_set_type(req, "text/html");
-  return httpd_resp_send(req, kViewerHtml, HTTPD_RESP_USE_STRLEN);
-}
-
-static esp_err_t favicon_handler(httpd_req_t *req) {
-  httpd_resp_set_status(req, "204 No Content");
-  return httpd_resp_send(req, nullptr, 0);
-}
 
 static esp_err_t stream_handler(httpd_req_t *req) {
   esp_err_t res = httpd_resp_set_type(req, kContentType);
@@ -92,40 +64,23 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   return res;
 }
 
-bool stream_server_begin(uint16_t page_port) {
-  httpd_config_t pconfig = HTTPD_DEFAULT_CONFIG();
-  pconfig.server_port = page_port;
-  pconfig.ctrl_port = 32768 + (page_port - 80);
-  pconfig.max_uri_handlers = 4;
+bool stream_server_begin(uint16_t port) {
+  httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+  config.server_port = port;
+  // Every instance needs its own control socket; they all default to 32768, so
+  // a second instance silently fails to start unless this is bumped.
+  config.ctrl_port = 32768 + (port - 80);
+  config.max_uri_handlers = 2;
 
-  if (httpd_start(&s_pages, &pconfig) != ESP_OK) {
-    Serial.printf("[stream] page server failed on port %u\n", (unsigned)page_port);
-    return false;
-  }
-
-  const httpd_uri_t viewer_uri = {"/", HTTP_GET, viewer_handler, nullptr};
-  httpd_register_uri_handler(s_pages, &viewer_uri);
-  const httpd_uri_t favicon_uri = {"/favicon.ico", HTTP_GET, favicon_handler, nullptr};
-  httpd_register_uri_handler(s_pages, &favicon_uri);
-
-  // Every httpd instance needs its own control socket; they all default to
-  // 32768, so a second instance silently fails to start unless this is bumped.
-  s_video_port = page_port + 1;
-  httpd_config_t vconfig = HTTPD_DEFAULT_CONFIG();
-  vconfig.server_port = s_video_port;
-  vconfig.ctrl_port = 32768 + (s_video_port - 80);
-  vconfig.max_uri_handlers = 2;
-
-  if (httpd_start(&s_video, &vconfig) != ESP_OK) {
-    Serial.printf("[stream] video server failed on port %u\n", (unsigned)s_video_port);
+  if (httpd_start(&s_video, &config) != ESP_OK) {
+    Serial.printf("[stream] failed to start on port %u\n", (unsigned)port);
     return false;
   }
 
   const httpd_uri_t stream_uri = {"/stream", HTTP_GET, stream_handler, nullptr};
   httpd_register_uri_handler(s_video, &stream_uri);
 
-  Serial.printf("[stream] page on :%u, video on :%u/stream\n", (unsigned)page_port,
-                (unsigned)s_video_port);
+  Serial.printf("[stream] video on :%u/stream\n", (unsigned)port);
   return true;
 }
 

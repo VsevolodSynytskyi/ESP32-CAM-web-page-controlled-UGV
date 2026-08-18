@@ -43,10 +43,18 @@ void motors_set(int16_t left, int16_t right);
 // both sides (coast).
 void motors_stop(bool brake);
 
-// Call at MOTOR_TICK_HZ from a dedicated task or the main loop. Applies the
-// asymmetric slew limit, the per-side calibration and the duty ceiling, then
-// writes the PWM registers. Also enforces the CMD_TIMEOUT_MS failsafe.
+// Call at MOTOR_TICK_HZ. Applies the asymmetric slew limit, the per-side
+// calibration and the duty ceiling, then writes the PWM registers. Also
+// enforces the CMD_TIMEOUT_MS failsafe.
 void motors_tick();
+
+// Spawns the task that calls motors_tick() at MOTOR_TICK_HZ, above the HTTP
+// server's priority. Call once, after motors_begin() and after Serial is up.
+//
+// Its own task rather than loop(): the failsafe is only as good as the tick
+// that enforces it, and loop() sits below the streaming task. A stall there
+// would leave the last throttle latched on the motors for the duration.
+void motors_start_task();
 
 // --- introspection, for telemetry ------------------------------------------
 
