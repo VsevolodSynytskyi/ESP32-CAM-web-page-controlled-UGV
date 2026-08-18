@@ -20,7 +20,7 @@ static volatile bool s_streaming = false;
 
 static const char kViewerHtml[] = R"HTML(<!DOCTYPE html><html><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>TankCam</title><style>
+<title>UGV GCS</title><style>
 html,body{margin:0;height:100%;background:#000;overflow:hidden}
 img{position:fixed;inset:0;width:100%;height:100%;object-fit:contain}
 </style></head><body>

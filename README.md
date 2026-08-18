@@ -1,8 +1,11 @@
 # ESP32-CAM web page controlled UGV
 
-Tank-style tracked UGV: AI-Thinker ESP32-CAM on an ESP32-CAM-MB USB shield, two
-DC motors through a TB6612FNG, 2S 18650 pack through a 5V buck converter. The
+Two-motor UGV: AI-Thinker ESP32-CAM on an ESP32-CAM-MB USB shield, two DC
+motors through a TB6612FNG, 2S 18650 pack through a 5V buck converter. The
 vehicle hosts its own WiFi network and streams live video to a phone browser.
+
+Chassis is undecided - the differential drive and the twin-slider control scheme
+suit tracks or skid-steer wheels equally, so nothing here assumes either.
 
 **Working:** camera, SoftAP, MJPEG video at VGA.
 **Next:** the web UI with twin spring-to-centre throttle sliders over WebSocket.
@@ -16,7 +19,7 @@ export PATH="$HOME/.platformio/penv/bin:$PATH"
 pio run -t upload -t monitor
 ```
 
-Join `TankCam` (password `tankcam1234`), open `http://192.168.4.1/`.
+Join `UGV` (password `letmecontrolit`), open `http://192.168.4.1/`.
 
 Video is served from **port 81**, the page from port 80.
 

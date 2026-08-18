@@ -53,7 +53,7 @@ static void drive_pair(uint8_t ch1, uint8_t ch2, int16_t cmd) {
       ledcWrite(ch1, MOTOR_PWM_MAX);  // both high -> short brake
       ledcWrite(ch2, MOTOR_PWM_MAX);
     } else {
-      ledcWrite(ch1, 0);  // both low -> high-Z, tracks free to be pushed
+      ledcWrite(ch1, 0);  // both low -> high-Z, wheels free to turn
       ledcWrite(ch2, 0);
     }
     return;
@@ -181,14 +181,6 @@ void motors_begin() {
 
   drive_pair(LEDC_CH_AIN1, LEDC_CH_AIN2, 0);
   drive_pair(LEDC_CH_BIN1, LEDC_CH_BIN2, 0);
-}
-
-void motors_log_config() {
-  Serial.printf("[mot] %u kHz / %u-bit  A(motor1)=GPIO%d,%d  B(motor2)=GPIO%d,%d\n",
-                MOTOR_PWM_FREQ_HZ / 1000, MOTOR_PWM_BITS, PIN_AIN1, PIN_AIN2, PIN_BIN1,
-                PIN_BIN2);
-  Serial.printf("[mot] duty ceiling %.0f%%, deadband +/-%d, %s decay\n",
-                MOTOR_MAX_DUTY * 100.0f, MOTOR_DEADBAND, s_slow_decay ? "slow" : "fast/coast");
 }
 
 void motors_set(int16_t left, int16_t right) {

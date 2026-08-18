@@ -152,10 +152,10 @@
 #define CMD_TIMEOUT_MS 300
 
 // ---------------------------------------------------------------------------
-//  Per-track calibration - fill in from a signed duty sweep on the bench
+//  Per-side calibration - fill in from a signed duty sweep on the bench
 // ---------------------------------------------------------------------------
 
-// Minimum duty at which each track actually starts turning, in MOTOR_SCALE
+// Minimum duty at which each side actually starts turning, in MOTOR_SCALE
 // units. Non-zero commands are remapped onto [min .. MOTOR_SCALE] so even the
 // gentlest slider movement produces motion instead of a stall whine.
 //
@@ -167,7 +167,7 @@
 #define MOTOR_MIN_MOVE_R_FWD 0
 #define MOTOR_MIN_MOVE_R_REV 0
 
-// Flip a track in software if its motor is wired backwards, instead of
+// Flip a side in software if its motor is wired backwards, instead of
 // resoldering. Verify on the bench before trusting the web UI.
 #define MOTOR_INVERT_L false
 #define MOTOR_INVERT_R false
@@ -249,8 +249,8 @@
 
 // SoftAP - the field mode. The phone joins this network directly, so no router
 // is involved and the vehicle works anywhere.
-#define AP_SSID "TankCam"
-#define AP_PASSWORD "tankcam1234"  // WPA2 requires at least 8 characters
+#define AP_SSID "UGV"
+#define AP_PASSWORD "letmecontrolit"  // WPA2 requires at least 8 characters
 
 // 0 = scan the band at boot and pick the quietest of 1 / 6 / 11.
 // 1-13 = force that channel.

@@ -20,21 +20,17 @@
 // ===========================================================================
 
 // Forces all four driver inputs low, then configures the four LEDC channels and
-// leaves both tracks coasting.
+// leaves both sides coasting.
 //
 // Call this as the FIRST statement in setup(), before Serial or anything else.
 // Until it runs, the ESP32's reset defaults hold GPIO13/14/15 weakly high and
 // GPIO2 weakly low, and any mismatched pair reads to the TB6612 as a drive
-// command. Every millisecond spent before this call is a millisecond a track
-// may be running at full battery voltage. It prints nothing for that reason -
-// call motors_log_config() afterwards, once Serial is up.
+// command. Every millisecond spent before this call is a millisecond a motor
+// may be running at full battery voltage. It deliberately prints nothing, so
+// that parking the pins never waits on Serial.
 void motors_begin();
 
-// Prints the pin map and limits. Separate from motors_begin() so that parking
-// the pins never waits on Serial.
-void motors_log_config();
-
-// Sets the desired throttle per track. Clamped, inverted per MOTOR_INVERT_*,
+// Sets the desired throttle per side. Clamped, inverted per MOTOR_INVERT_*,
 // and deadbanded. Does NOT touch the hardware - motors_tick() does that, so
 // there is exactly one writer to the PWM registers.
 //
@@ -42,17 +38,17 @@ void motors_log_config();
 // still at the controls.
 void motors_set(int16_t left, int16_t right);
 
-// Immediate stop, bypassing the slew limiter. For the serial harness's space
-// bar and for every WebSocket disconnect path. brake=true energises both low
-// side FETs (short brake); brake=false releases the tracks (coast).
+// Immediate stop, bypassing the slew limiter. For every disconnect path.
+// brake=true energises both low side FETs (short brake); brake=false releases
+// both sides (coast).
 void motors_stop(bool brake);
 
 // Call at MOTOR_TICK_HZ from a dedicated task or the main loop. Applies the
-// asymmetric slew limit, the per-track calibration and the duty ceiling, then
+// asymmetric slew limit, the per-side calibration and the duty ceiling, then
 // writes the PWM registers. Also enforces the CMD_TIMEOUT_MS failsafe.
 void motors_tick();
 
-// --- introspection, for the serial harness and telemetry -------------------
+// --- introspection, for telemetry ------------------------------------------
 
 int16_t motors_target_left();
 int16_t motors_target_right();
