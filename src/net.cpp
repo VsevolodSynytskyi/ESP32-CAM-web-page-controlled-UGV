@@ -6,8 +6,8 @@
 
 #include "config.h"
 
-// secrets.h is gitignored and only Stage 1b needs it. Guarding the include lets
-// every other stage compile on a fresh checkout where it does not exist yet.
+// secrets.h is gitignored and only station mode needs it. Guarding the include
+// lets a fresh checkout compile before anyone has created it.
 #if __has_include("secrets.h")
 #include "secrets.h"
 #endif
@@ -59,6 +59,32 @@ bool net_begin_sta() {
 // found is scored against every channel it can interfere with - a 20 MHz
 // carrier bleeds roughly +/-4 channels - weighted by how loud it is, since a
 // strong neighbour steals far more airtime than a distant one.
+// Does a multiple of the camera's pixel clock fall inside this channel?
+//
+// Every digital clock on the camera ribbon radiates at every multiple of
+// itself, and that ribbon is close to a quarter wave at 2.4 GHz - so a harmonic
+// inside the channel we are about to transmit on raises our own noise floor.
+// Measured on this board: 20 MHz XCLK cost ~20x throughput, and 20 MHz is the
+// worst possible choice because 2420 / 2440 / 2460 put a harmonic in all three
+// non-overlapping channels at once.
+//
+// Arithmetic is in 0.1 MHz units so 16.5 MHz stays exact. Uses CAM_XCLK_HZ
+// rather than the live value because the AP is brought up once at boot; the 'x'
+// serial key can move XCLK afterwards without the channel following it.
+static bool xclk_harmonic_in_channel(int channel) {
+  const int centre = 2407 + 5 * channel;  // 802.11 2.4 GHz channel plan, MHz
+  const int lo = (centre - 10) * 10;      // 20 MHz occupied bandwidth
+  const int hi = (centre + 10) * 10;
+  const int xclk = CAM_XCLK_HZ / 100000;  // 0.1 MHz units: 24 MHz -> 240
+  if (xclk <= 0) return false;
+
+  for (int k = lo / xclk; k <= hi / xclk + 1; k++) {
+    const int harmonic = k * xclk;
+    if (harmonic >= lo && harmonic <= hi) return true;
+  }
+  return false;
+}
+
 static int scan_for_quietest_channel() {
   Serial.println(F("[net] scanning 2.4 GHz for the quietest channel..."));
 
@@ -92,11 +118,26 @@ static int scan_for_quietest_channel() {
   int best_score = INT32_MAX;
   for (int i = 0; i < 3; i++) {
     const int c = candidates[i];
-    Serial.printf("[net]   channel %-2d congestion score %d\n", c, score[c]);
-    if (score[c] < best_score) {
-      best_score = score[c];
+    const bool jammed = xclk_harmonic_in_channel(c);
+
+    // Deliberately larger than any congestion score the loop above can produce.
+    // A neighbouring network shares the airtime; our own camera clock raises the
+    // noise floor, and no amount of politeness recovers from that. Measured at
+    // 20 MHz XCLK on this board: ~20x throughput loss, and it was indifferent to
+    // congestion - channel score 0 was just as bad as channel score 56.
+    const int total = score[c] + (jammed ? 1000 : 0);
+
+    Serial.printf("[net]   channel %-2d congestion %-3d  %s\n", c, score[c],
+                  jammed ? "XCLK HARMONIC LANDS HERE - avoid" : "harmonic clear");
+    if (total < best_score) {
+      best_score = total;
       best = c;
     }
+  }
+
+  if (best_score >= 1000) {
+    Serial.println(F("[net] every channel has an XCLK harmonic in it - expect poor"));
+    Serial.println(F("[net] throughput. Change CAM_XCLK_HZ; 20 MHz cannot avoid this."));
   }
 
   Serial.printf("[net] %d networks in range, choosing channel %d\n", found, best);
@@ -128,10 +169,9 @@ bool net_begin_ap() {
     return false;
   }
 
-  // Modem sleep off is the only radio setting we touch. The MJPEG2SD reference
-  // does no WiFi tuning whatsoever and reaches 15 fps at SVGA, so anything
-  // beyond this is a variable it does not carry - and every one I added while
-  // chasing this made the system harder to reason about, not faster.
+  // Modem sleep off is the only radio setting we touch. Everything else was
+  // tried during the throughput hunt and every one of them added a variable
+  // without adding speed - the fix was the pixel clock, not WiFi tuning.
   WiFi.setSleep(false);
 
   Serial.printf("[net] AP up. Join \"%s\" and open http://%s/\n", AP_SSID,
@@ -141,3 +181,4 @@ bool net_begin_ap() {
   Serial.println(F("[net] stay connected, or it will silently fall back to cell."));
   return true;
 }
+

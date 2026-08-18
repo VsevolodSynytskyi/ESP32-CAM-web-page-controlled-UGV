@@ -117,8 +117,8 @@
 // Duty ceiling. 2S is 8.4V fresh off the charger; the common 3-6V TT
 // gearmotors will cook at full duty. 0.55 * 8.4V ~= 4.6V average.
 //
-//  >>> Raise this only after Stage 0 measures the motors' voltage rating and
-//  >>> stall current. The TB6612FNG is 1.2A continuous / 3.2A peak per channel.
+//  >>> Raise this only after measuring the motors' voltage rating and stall
+//  >>> current. The TB6612FNG is 1.2A continuous / 3.2A peak per channel.
 #define MOTOR_MAX_DUTY 0.55f
 
 // Band around zero treated as a hard stop, in MOTOR_SCALE units. Makes
@@ -127,7 +127,7 @@
 
 // Slow decay (default): current recirculates through the low-side FETs, so
 // torque per unit duty is far more linear and crawl speed is usable. Set false
-// for coast/fast decay to compare them on the bench in Stage 2.
+// for coast/fast decay to compare the two on the bench.
 #define MOTOR_SLOW_DECAY true
 
 // Brake (both direction pins high) instead of coast (both low) when stopped.
@@ -152,7 +152,7 @@
 #define CMD_TIMEOUT_MS 300
 
 // ---------------------------------------------------------------------------
-//  Per-track calibration - fill in from the Stage 2 signed duty sweep
+//  Per-track calibration - fill in from a signed duty sweep on the bench
 // ---------------------------------------------------------------------------
 
 // Minimum duty at which each track actually starts turning, in MOTOR_SCALE
@@ -168,7 +168,7 @@
 #define MOTOR_MIN_MOVE_R_REV 0
 
 // Flip a track in software if its motor is wired backwards, instead of
-// resoldering. Verify with Stage 2 before trusting the web UI.
+// resoldering. Verify on the bench before trusting the web UI.
 #define MOTOR_INVERT_L false
 #define MOTOR_INVERT_R false
 
@@ -180,41 +180,66 @@
 
 // ---------------------------------------------------------------------------
 //  Camera
+//
+//  Settings captured 2026-08-18 by tuning against a live image, then measured.
+//  Only XCLK, frame size and quality matter for throughput; the sensor profile
+//  further down is picture quality only.
 // ---------------------------------------------------------------------------
 
-// Some OV2640 modules produce corrupt or torn frames at 20 MHz. If Stage 1a
-// reports odd frame sizes or the image is scrambled, try 16500000 then 10000000.
-#define CAM_XCLK_HZ 20000000
-
-// Start small and work up. Frame size is the single biggest lever on frame
-// rate, because it drives bytes-per-frame almost linearly and this link is
-// bandwidth-limited long before the sensor is:
+// 24 MHz, not the conventional 20, and this is the most important line here.
 //
-//     QVGA  320x240   ~6 kB/frame    sensor can do 50 fps
-//     VGA   640x480  ~25 kB/frame    sensor can do 25 fps
-//     SVGA  800x600  ~40 kB/frame    sensor can do 25 fps
+// Every multiple of the pixel clock radiates from the camera ribbon, which is
+// close to a quarter wave at 2.4 GHz. Harmonics repeat every XCLK MHz and a
+// WiFi channel is 20 MHz wide - so any clock at or below 20 MHz has gaps too
+// narrow to fit a channel in, and a harmonic MUST land inside whichever channel
+// you pick. At 20 MHz that is 2420 in ch1, 2440 in ch6, 2460 in ch11: nowhere
+// to hide. It cost a ~20x throughput collapse that took days to find, and it
+// hits the stock CameraWebServer too, which also defaults to 20 MHz.
 //
-// So a link delivering 25 kB/s manages 1 fps at VGA but 4 fps at QVGA, for the
-// same radio. Press 1-5 on the serial console to change this live, then set
-// whatever holds up here. Expands inside camera.cpp, which includes the sensor
-// header.
-#define CAM_FRAMESIZE FRAMESIZE_QVGA
+// Measured here: 0.12 fps at 20 MHz, 19-25 fps at 24 MHz, all else equal.
+// 25 MHz was tried and came out ~1.5x worse than 24 despite looking equivalent
+// on paper - at the ~100th harmonic a 0.1% clock error moves it 2.4 MHz, which
+// is wider than the margin, so measurement beats arithmetic here.
+//
+// net.cpp penalises any channel a harmonic falls into. Change this and the
+// channel choice moves with it.
+#define CAM_XCLK_HZ 24000000
 
-// 10-63. Higher means worse quality and SMALLER frames. 14 trades a little
-// detail for noticeably fewer bytes; drop toward 10 once the link proves it can
-// carry it.
-#define CAM_JPEG_QUALITY 14
+// Frame size dominates throughput - bytes scale with pixel count.
+#define CAM_FRAMESIZE FRAMESIZE_VGA  // 640x480
 
-// Four, matching the MJPEG2SD reference. CAMERA_GRAB_LATEST needs at least two,
-// but with only two the driver has a single spare while we hold one during a
-// send - so a slow send starves the pipeline and the next frame handed back is
-// stale. Extra buffers let the sensor keep cycling and keep the newest frame
-// genuinely new, which matters more for latency than for throughput.
-#define CAM_FB_COUNT 4
+// 10-63. LOWER is BETTER quality and BIGGER frames. The link saturates around
+// 2.7 Mbit/s either way, so this is purely a detail-vs-frame-rate trade:
+// q16 gave ~14 kB frames at 22-25 fps, q4 gave ~50 kB at 7-11 fps.
+#define CAM_JPEG_QUALITY 8
 
-// Image orientation. Set these once the camera is bolted to the chassis - the
-// module is frequently mounted upside down or facing backwards, and flipping in
-// the sensor is free whereas rotating in CSS on the phone is not.
+// Two, matching the stock CameraWebServer. GRAB_LATEST needs at least two.
+#define CAM_FB_COUNT 2
+
+// Sensor profile - picture only, no bearing on throughput.
+#define CAM_BRIGHTNESS 0      // -2..2
+#define CAM_CONTRAST 0        // -2..2
+#define CAM_SATURATION 0      // -2..2
+#define CAM_SHARPNESS 0       // -2..2  (OV2640 ignores this)
+#define CAM_SPECIAL_EFFECT 0  // 0 none, 1 negative, 2 grayscale, 3 red, 4 green, 5 blue, 6 sepia
+#define CAM_WB_MODE 0         // 0 auto, 1 sunny, 2 cloudy, 3 office, 4 home
+#define CAM_AWB 1             // auto white balance
+#define CAM_AWB_GAIN 1
+#define CAM_AEC 1             // auto exposure
+#define CAM_AEC2 0            // DSP auto exposure ("night mode")
+#define CAM_AE_LEVEL 0        // -2..2
+#define CAM_AEC_VALUE 168     // 0..1200, inert while CAM_AEC is 1
+#define CAM_AGC 1             // auto gain
+#define CAM_AGC_GAIN 0        // 0..30, only used when CAM_AGC is 0
+#define CAM_GAINCEILING 0     // 0..6 == 2x..128x
+#define CAM_BPC 0             // black pixel correction
+#define CAM_WPC 1             // white pixel correction
+#define CAM_RAW_GMA 1         // gamma correction
+#define CAM_LENC 1            // lens shading correction
+#define CAM_DCW 1             // downsize enable
+#define CAM_COLORBAR 0        // test pattern
+
+// Set these once the camera is bolted to the chassis.
 #define CAM_VFLIP 0    // 1 = flip vertically
 #define CAM_HMIRROR 0  // 1 = mirror horizontally
 
@@ -222,8 +247,8 @@
 //  Networking
 // ---------------------------------------------------------------------------
 
-// SoftAP, used from Stage 3 onward. The phone joins this network directly, so
-// no router is involved and the vehicle works anywhere.
+// SoftAP - the field mode. The phone joins this network directly, so no router
+// is involved and the vehicle works anywhere.
 #define AP_SSID "TankCam"
 #define AP_PASSWORD "tankcam1234"  // WPA2 requires at least 8 characters
 
@@ -239,8 +264,9 @@
 
 #define AP_MAX_CONN 1  // one pilot; extra clients only steal bandwidth
 
-#define HTTP_PORT 80    // UI page + WebSocket control
-#define STREAM_PORT 81  // MJPEG only, on its own httpd instance
+// The video server takes HTTP_PORT + 1 - see the two-instance note in
+// stream_server.h.
+#define HTTP_PORT 80
 
-// How long net_begin_sta() waits for a DHCP lease before giving up (Stage 1b).
+// How long net_begin_sta() waits for a DHCP lease before giving up.
 #define STA_CONNECT_TIMEOUT_MS 20000

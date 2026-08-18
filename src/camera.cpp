@@ -5,10 +5,39 @@
 #include "camera_pins.h"
 #include "config.h"
 
-static bool s_degraded = false;
-static bool s_running = false;
+// Push the CAM_* profile to the sensor. Return values are ignored: the OV2640
+// does not implement every control the sensor_t interface exposes, and a driver
+// saying "not supported on this part" is not a boot failure.
+static void apply_profile(sensor_t *s) {
+  s->set_brightness(s, CAM_BRIGHTNESS);
+  s->set_contrast(s, CAM_CONTRAST);
+  s->set_saturation(s, CAM_SATURATION);
+  s->set_sharpness(s, CAM_SHARPNESS);
+  s->set_special_effect(s, CAM_SPECIAL_EFFECT);
 
-bool camera_is_degraded() { return s_degraded; }
+  s->set_whitebal(s, CAM_AWB);
+  s->set_awb_gain(s, CAM_AWB_GAIN);
+  s->set_wb_mode(s, CAM_WB_MODE);
+
+  s->set_exposure_ctrl(s, CAM_AEC);
+  s->set_aec2(s, CAM_AEC2);
+  s->set_ae_level(s, CAM_AE_LEVEL);
+  s->set_aec_value(s, CAM_AEC_VALUE);
+
+  s->set_gain_ctrl(s, CAM_AGC);
+  s->set_agc_gain(s, CAM_AGC_GAIN);
+  s->set_gainceiling(s, (gainceiling_t)CAM_GAINCEILING);
+
+  s->set_bpc(s, CAM_BPC);
+  s->set_wpc(s, CAM_WPC);
+  s->set_raw_gma(s, CAM_RAW_GMA);
+  s->set_lenc(s, CAM_LENC);
+  s->set_dcw(s, CAM_DCW);
+  s->set_colorbar(s, CAM_COLORBAR);
+
+  s->set_vflip(s, CAM_VFLIP);
+  s->set_hmirror(s, CAM_HMIRROR);
+}
 
 bool camera_begin() {
   camera_config_t c = {};
@@ -33,76 +62,59 @@ bool camera_begin() {
   c.pin_pclk = PCLK_GPIO_NUM;
 
   c.xclk_freq_hz = CAM_XCLK_HZ;
-
-  // The camera driver generates XCLK with its own LEDC timer and channel. These
-  // must not collide with the motor PWM, which owns channels 0-3 on timers 0
-  // and 1 (see LEDC_CH_* in config.h). Timer 3 / channel 7 keeps them apart.
-  c.ledc_timer = LEDC_TIMER_3;
-  c.ledc_channel = LEDC_CHANNEL_7;
-
   c.pixel_format = PIXFORMAT_JPEG;
   c.sccb_i2c_port = 0;
 
-  if (psramFound()) {
-    // Initialise at the LARGEST size PSRAM can hold, then drop to the working
-    // size immediately after. The driver sizes its DMA descriptors and frame
-    // buffers once, at init, from this value - so starting large means any
-    // later switch down always fits, with no reallocation. Taken from the
-    // MJPEG2SD reference, which does the same thing for the same reason.
-    framesize_t max_fs = FRAMESIZE_SVGA;
-    if (ESP.getPsramSize() > 3 * 1024 * 1024) max_fs = FRAMESIZE_UXGA;
+  // The camera driver generates XCLK with its own LEDC timer and channel. These
+  // must not collide with the motor PWM, which owns channels 0-3 on timers 0
+  // and 1 (see LEDC_CH_* in config.h).
+  c.ledc_timer = LEDC_TIMER_3;
+  c.ledc_channel = LEDC_CHANNEL_7;
 
-    c.frame_size = max_fs;
+  const bool psram = psramFound();
+  if (psram) {
+    // Initialise at the largest size PSRAM can hold, then drop to the working
+    // size. The driver sizes its DMA descriptors and framebuffers once, from
+    // this value, so starting large means any later switch down always fits.
+    c.frame_size = ESP.getPsramSize() > 3 * 1024 * 1024 ? FRAMESIZE_UXGA : FRAMESIZE_SVGA;
     c.jpeg_quality = 10;
     c.fb_count = CAM_FB_COUNT;
     c.fb_location = CAMERA_FB_IN_PSRAM;
     c.grab_mode = CAMERA_GRAB_LATEST;
-    s_degraded = false;
   } else {
-    // Degraded fallback. Internal DRAM is only ~320 KB and shared with WiFi, so
-    // one small buffer is all that fits. GRAB_LATEST is meaningless with a
-    // single buffer, hence WHEN_EMPTY.
+    // Internal DRAM is ~320 kB and shared with WiFi, so one small buffer is all
+    // that fits. GRAB_LATEST is meaningless with a single buffer.
     Serial.println(F("[cam] no PSRAM - falling back to a single QVGA DRAM buffer"));
-    Serial.println(F("[cam] check -DBOARD_HAS_PSRAM and that GPIO16 is unwired"));
     c.frame_size = FRAMESIZE_QVGA;
     c.jpeg_quality = 15;
     c.fb_count = 1;
     c.fb_location = CAMERA_FB_IN_DRAM;
     c.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
-    s_degraded = true;
   }
 
   const esp_err_t err = esp_camera_init(&c);
   if (err != ESP_OK) {
-    Serial.printf("[cam] esp_camera_init failed: 0x%04x (%s)\n", err, esp_err_to_name(err));
-    if (err == ESP_ERR_CAMERA_NOT_DETECTED) {
-      Serial.println(F("[cam] sensor not detected. Check the ribbon cable is fully"));
-      Serial.println(F("[cam] seated and the latch is closed, and that the board is"));
-      Serial.println(F("[cam] getting a solid 5V - the OV2640 browns out easily."));
-    }
+    Serial.printf("[cam] init failed: 0x%04x (%s)\n", err, esp_err_to_name(err));
+    Serial.println(F("[cam] check the ribbon is fully seated and the latch closed"));
     return false;
   }
 
   sensor_t *s = esp_camera_sensor_get();
   if (s == nullptr) {
-    Serial.println(F("[cam] init reported OK but sensor handle is null"));
+    Serial.println(F("[cam] init reported OK but the sensor handle is null"));
     return false;
   }
 
-  Serial.printf("[cam] sensor PID 0x%02x initialised at %s\n", s->id.PID,
-                s_degraded ? "QVGA/DRAM (degraded)" : "max size in PSRAM");
-
-  // Now drop to the working size. Buffers were already allocated for the
-  // maximum above, so this is just a sensor register change.
-  if (!s_degraded) {
-    camera_set_framesize(CAM_FRAMESIZE);
-    camera_set_quality(CAM_JPEG_QUALITY);
+  if (psram) {
+    // Buffers were allocated for the maximum above, so this is just a sensor
+    // register change.
+    s->set_framesize(s, CAM_FRAMESIZE);
+    s->set_quality(s, CAM_JPEG_QUALITY);
   }
+  apply_profile(s);
 
-  camera_set_vflip(CAM_VFLIP != 0);
-  camera_set_hmirror(CAM_HMIRROR != 0);
-
-  s_running = true;
+  Serial.printf("[cam] OV2640 (PID 0x%02x) up: xclk %d Hz, quality %d, %d buffer(s)\n", s->id.PID,
+                CAM_XCLK_HZ, CAM_JPEG_QUALITY, c.fb_count);
   return true;
 }
 
@@ -112,53 +124,3 @@ void camera_warmup(int frames) {
     if (fb != nullptr) esp_camera_fb_return(fb);
   }
 }
-
-bool camera_set_framesize(framesize_t size) {
-  sensor_t *s = esp_camera_sensor_get();
-  return s != nullptr && s->set_framesize(s, size) == 0;
-}
-
-bool camera_set_quality(int quality) {
-  sensor_t *s = esp_camera_sensor_get();
-  if (s == nullptr) return false;
-  if (quality < 10) quality = 10;
-  if (quality > 63) quality = 63;
-  return s->set_quality(s, quality) == 0;
-}
-
-bool camera_set_vflip(bool on) {
-  sensor_t *s = esp_camera_sensor_get();
-  return s != nullptr && s->set_vflip(s, on ? 1 : 0) == 0;
-}
-
-bool camera_set_hmirror(bool on) {
-  sensor_t *s = esp_camera_sensor_get();
-  return s != nullptr && s->set_hmirror(s, on ? 1 : 0) == 0;
-}
-
-bool camera_frame_looks_valid(const camera_fb_t *fb) {
-  if (fb == nullptr || fb->format != PIXFORMAT_JPEG || fb->len < 4) return false;
-
-  const bool soi = fb->buf[0] == 0xFF && fb->buf[1] == 0xD8;
-  const bool eoi = fb->buf[fb->len - 2] == 0xFF && fb->buf[fb->len - 1] == 0xD9;
-  return soi && eoi;
-}
-
-void camera_end() {
-  // Clear the flag first, then wait before deinitialising. esp_camera_deinit()
-  // frees the framebuffers, and a stream handler may be mid-frame holding one -
-  // reading fb->len afterwards is a use-after-free, which is what produced
-  // nonsense like "996392876 B/f" in the status line. The handlers check
-  // camera_is_running() each iteration, so this gives them time to drop out.
-  //
-  // Not airtight - a proper fix needs a reader lock around the framebuffer -
-  // but this is a diagnostic path, and closing the window beats pretending it
-  // is not there.
-  s_running = false;
-  delay(300);
-
-  esp_camera_deinit();
-  Serial.println(F("[cam] deinitialised - sensor, XCLK and DMA all stopped"));
-}
-
-bool camera_is_running() { return s_running; }

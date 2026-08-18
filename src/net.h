@@ -1,11 +1,11 @@
 #pragma once
 
-// WiFi bring-up. Two modes, used by different stages:
+// WiFi bring-up. Two modes:
 //
-//   Station (Stage 1b)  - joins your home network. Right for bench work: the
-//                         laptop keeps its internet connection and DevTools.
-//   SoftAP  (Stage 3+)  - the vehicle hosts its own network at 192.168.4.1, so
-//                         no router is involved and it works anywhere.
+//   Station  - joins your home network. Handy on the bench: the laptop keeps
+//              its internet connection and DevTools.
+//   SoftAP   - the vehicle hosts its own network at 192.168.4.1, so no router
+//              is involved and it works anywhere. This is the field mode.
 //
 // Both disable WiFi modem sleep, which is on by default and adds 100-200 ms of
 // jitter - fatal for a video feed you are steering by.
@@ -17,3 +17,4 @@ bool net_begin_sta();
 // Starts the SoftAP described by AP_* in config.h. Returns false if the AP
 // could not be brought up.
 bool net_begin_ap();
+

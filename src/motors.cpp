@@ -101,8 +101,7 @@ static int16_t clamp_scale(int32_t v) {
 // rather than a stall whine.
 //
 // min_move must be measured with the same MOTOR_MAX_DUTY in place as it will
-// run with - the Stage 2 sweep does exactly that, which is what keeps the two
-// numbers self-consistent.
+// run with, or the two numbers are not self-consistent.
 static int16_t apply_min_move(int16_t cmd, int16_t min_move) {
   if (cmd == 0) return 0;
   if (min_move <= 0) return cmd;
@@ -286,20 +285,3 @@ void motors_set_slow_decay(bool on) {
 }
 
 bool motors_slow_decay() { return s_slow_decay; }
-
-void motors_release() {
-  const uint8_t pins[4] = {PIN_AIN1, PIN_AIN2, PIN_BIN1, PIN_BIN2};
-
-  for (int i = 0; i < 4; i++) {
-    ledcDetachPin(pins[i]);
-    // Pull-down rather than a bare input: a floating CMOS input on the driver
-    // can drift anywhere, and (L,L) on both channels is an unambiguous stop.
-    pinMode(pins[i], INPUT_PULLDOWN);
-  }
-
-  s_target_l = s_target_r = 0;
-  s_applied_l = s_applied_r = 0;
-  s_failsafe = true;
-
-  Serial.println(F("[mot] released - LEDC detached, pins are inputs"));
-}
