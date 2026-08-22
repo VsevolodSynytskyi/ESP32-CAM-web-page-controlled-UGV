@@ -105,15 +105,60 @@ second instance silently fails to start unless it is bumped.
 TB6612FNG in the **4-pin scheme**: `PWMA`, `PWMB`, `STBY` and `VCC` tied
 permanently to **3.3V**, with the PWM on the direction pins.
 
-| ESP32-CAM | TB6612FNG |
-|---|---|
-| GPIO14 | AIN1 — channel A (motor 1) |
-| GPIO15 | AIN2 — channel A |
-| GPIO12 | BIN1 — channel B (motor 2) |
-| GPIO2 | BIN2 — channel B |
-| 3V3 | PWMA, PWMB, STBY, VCC |
-| GND | GND (star point at the battery hub) |
-| — | VM ← 2S+, with 1000 µF bulk cap |
+**Five wires** run from the ESP32-CAM to the driver:
+
+| ESP32-CAM | TB6612FNG | LEDC ch |
+|---|---|---|
+| GPIO14 | `AIN1` — channel A (motor 1, on AO1/AO2) | 0 |
+| GPIO15 | `AIN2` — channel A | 1 |
+| GPIO12 | `BIN1` — channel B (motor 2, on BO1/BO2) | 2 |
+| GPIO2 | `BIN2` — channel B | 3 |
+| 3V3 | `VCC`, with `STBY`/`PWMA`/`PWMB` jumpered to it on the driver | — |
+
+**`GND` is deliberately not one of them.** The two boards share a ground at the
+star point, not through a wire between them — see [Power](#power). Adding that
+sixth wire creates a second return path, and motor current then divides into the
+ESP's ground pin.
+
+### Same wiring, from the driver's side
+
+Every pin on the breakout, for when you have the board in front of you. Most
+TB6612FNG modules carry these in two rows — power and motor outputs along one
+edge, logic along the other:
+
+| TB6612FNG | connects to | |
+|---|---|---|
+| `VM` | battery `+`, through the switch | motor rail, 7.4–8.4 V. 1000 µF here |
+| `VCC` | ESP32-CAM `3V3` | logic supply, ~1 mA |
+| `GND` | the star point at battery `−` | |
+| `STBY` | ESP32-CAM `3V3` | **tie high or nothing moves** |
+| `PWMA` | ESP32-CAM `3V3` | tied high — PWM is on the direction pins |
+| `AIN1` | ESP32-CAM GPIO14 | |
+| `AIN2` | ESP32-CAM GPIO15 | |
+| `AO1` | motor A | |
+| `AO2` | motor A | |
+| `PWMB` | ESP32-CAM `3V3` | tied high |
+| `BIN1` | ESP32-CAM GPIO12 | |
+| `BIN2` | ESP32-CAM GPIO2 | |
+| `BO1` | motor B | |
+| `BO2` | motor B | |
+
+`VCC`, `STBY`, `PWMA` and `PWMB` are jumpered together **on the driver**, so
+they cost one wire back to the ESP32, not four.
+
+Breakouts usually expose two or three `GND` pins. They are one net internally —
+use a single one, wired to the star.
+
+**`STBY` low is the silent failure.** The driver sits in standby with every
+output high-impedance: the page's buttons work, the firmware logs normally, no
+error appears anywhere, and the motors simply never turn. `PWMA`/`PWMB` do the
+same thing per channel.
+
+**`VM` and `VCC` sit next to each other** on most boards. `VM` on 3V3 gives the
+motor 0.55 × 3.3 ≈ 1.8 V — it buzzes and won't turn. `VCC` on the pack is worse.
+
+To reverse a motor, swap its two output wires (`AO1`↔`AO2`) or flip
+`MOTOR_INVERT_L`/`MOTOR_INVERT_R` in [config.h](include/config.h). Don't do both.
 
 **GPIO13 and GPIO16 must be left unconnected.** Keep the microSD slot empty —
 those lines are shared with the motor pins.
@@ -174,15 +219,28 @@ Everything not listed — GPIO 5, 18, 19, 21, 22, 23, 25, 26, 27, 32, 34, 35, 36
 
 ```
 2S 18650 (7.4 V nom / 8.4 V max)
-  ├─► TB6612 VM ──┬── 1000 µF electrolytic (at the driver, short leads)
-  │               └── 0.1 µF ceramic
-  └─► 5V buck ──► ESP32-CAM 5V pin ──► onboard LDO ──► 3V3 ──► TB6612 logic
+   +  ── switch ──┬──► TB6612 VM ──┬── 1000 µF electrolytic (at the driver)
+                  │                └── 0.1 µF ceramic
+                  └──► buck IN+ ──► buck OUT+ ──► ESP32-CAM 5V pin
+                                                       │
+                                                  onboard LDO
+                                                       │
+                                                     3V3 ──► TB6612 VCC/STBY/PWMA/PWMB
+
+   -  ◄── THE STAR ──┬──── TB6612 GND
+                     └──── buck IN-  ──(buck ground)──  buck OUT- ──► ESP32-CAM GND
 ```
 
-Star ground at the battery hub. 0.1 µF across each motor's terminals and from
-each terminal to the can. Never feed 5 V into 3V3. **USB and the buck must not
-both drive the 5 V pin** — on the bench, USB for the ESP and battery for VM
-only, grounds common.
+**Two wires on `+`, two on `−`, and nothing daisy-chained.** The star is the
+battery negative terminal itself. The ESP32's ground reaches it *through the
+buck* — `IN-` and `OUT-` are the same copper — which is why there is no ground
+wire between the ESP32 and the driver. Motor return current must never share
+a wire with the ESP's, or 20 kHz PWM edges land on its ground reference.
+
+0.1 µF across each motor's terminals and from each terminal to the can. Never
+feed 5 V into 3V3. **USB and the buck must not both drive the 5 V pin** — they
+are the same node with nothing between them. On the bench, USB for the ESP and
+battery for VM only; the grounds are already common through the buck.
 
 ### Motors are still unmeasured
 
