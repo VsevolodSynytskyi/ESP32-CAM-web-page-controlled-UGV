@@ -216,6 +216,13 @@
 // Two, matching the stock CameraWebServer. GRAB_LATEST needs at least two.
 #define CAM_FB_COUNT 2
 
+// A cold power-on is not a reset. The sensor's own regulators and its internal
+// power-on reset need time that a warm restart has already spent, so the first
+// esp_camera_init() after power is applied can fail where pressing RST works.
+// Retrying costs nothing on a healthy boot.
+#define CAM_INIT_ATTEMPTS 4
+#define CAM_INIT_RETRY_MS 250
+
 // Sensor profile - picture only, no bearing on throughput.
 #define CAM_BRIGHTNESS 0      // -2..2
 #define CAM_CONTRAST 0        // -2..2

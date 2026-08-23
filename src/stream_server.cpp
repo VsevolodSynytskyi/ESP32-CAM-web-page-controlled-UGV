@@ -4,6 +4,7 @@
 #include <esp_camera.h>
 #include <esp_http_server.h>
 
+#include "camera.h"
 #include "config.h"
 
 // Arbitrary, but must not appear in the JPEG payload. A long digit run is the
@@ -17,6 +18,13 @@ static httpd_handle_t s_video = nullptr;
 static volatile bool s_streaming = false;
 
 static esp_err_t stream_handler(httpd_req_t *req) {
+  // Without this the page's 1 s reconnect would hammer a handler that can only
+  // ever time out on null frames.
+  if (!camera_ready()) {
+    httpd_resp_set_status(req, "503 Service Unavailable");
+    return httpd_resp_send(req, "no camera", HTTPD_RESP_USE_STRLEN);
+  }
+
   esp_err_t res = httpd_resp_set_type(req, kContentType);
   if (res != ESP_OK) return res;
   httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");

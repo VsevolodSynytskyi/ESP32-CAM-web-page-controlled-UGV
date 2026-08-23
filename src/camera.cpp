@@ -39,7 +39,9 @@ static void apply_profile(sensor_t *s) {
   s->set_hmirror(s, CAM_HMIRROR);
 }
 
-bool camera_begin() {
+static bool s_ready = false;
+
+static bool try_init() {
   camera_config_t c = {};
 
   c.pin_pwdn = PWDN_GPIO_NUM;
@@ -117,6 +119,25 @@ bool camera_begin() {
                 CAM_XCLK_HZ, CAM_JPEG_QUALITY, c.fb_count);
   return true;
 }
+
+bool camera_begin() {
+  for (int attempt = 1; attempt <= CAM_INIT_ATTEMPTS; attempt++) {
+    if (attempt > 1) {
+      // Release whatever the failed attempt allocated before trying again. It
+      // returns an error when nothing was initialised, which is fine.
+      esp_camera_deinit();
+      delay(CAM_INIT_RETRY_MS);
+      Serial.printf("[cam] retry %d of %d\n", attempt, CAM_INIT_ATTEMPTS);
+    }
+    if (try_init()) {
+      s_ready = true;
+      return true;
+    }
+  }
+  return false;
+}
+
+bool camera_ready() { return s_ready; }
 
 void camera_warmup(int frames) {
   for (int i = 0; i < frames; i++) {

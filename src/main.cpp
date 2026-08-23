@@ -5,8 +5,9 @@
 //  hold-to-run motor buttons on the same page.
 //
 //  Boot order is deliberate. Motors are parked before anything else can take
-//  time, and the camera comes up before the radio so a sensor fault halts with
-//  an unambiguous error instead of looking like a network problem.
+//  time, and the camera comes up before the radio so its result is in the log
+//  before the network noise. A camera fault is reported, not fatal - losing the
+//  radio too would leave nothing to diagnose it with.
 // ===========================================================================
 
 #include <Arduino.h>
@@ -58,8 +59,15 @@ void setup() {
   // parked since motors_begin() above; this starts enforcing that.
   motors_start_task();
 
-  if (!camera_begin()) halt_blinking("camera init failed");
-  camera_warmup();
+  // Deliberately not fatal. The radio is how you reach the vehicle - to see the
+  // error, to drive it off whatever it is stuck on, to reflash it. Halting here
+  // for a sensor fault means a board that looks completely dead, which is what
+  // a failed cold-boot camera init used to produce.
+  if (camera_begin()) {
+    camera_warmup();
+  } else {
+    Serial.println(F("[cam] no camera - continuing so the page and controls still work"));
+  }
 
   if (net_begin_sta()) {
     g_ap_mode = false;

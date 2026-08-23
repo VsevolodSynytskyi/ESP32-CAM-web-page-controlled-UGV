@@ -9,6 +9,10 @@
 // picture rather than preventing boot.
 bool camera_begin();
 
+// True once camera_begin() has succeeded. The vehicle stays drivable without a
+// camera, so callers that need frames have to ask rather than assume.
+bool camera_ready();
+
 // Discard a few frames so auto-gain and auto-white-balance settle. The first
 // frames out of an OV2640 are dark and badly exposed.
 void camera_warmup(int frames = 4);
