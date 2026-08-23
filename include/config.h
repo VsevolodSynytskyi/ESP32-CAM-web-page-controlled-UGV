@@ -257,6 +257,11 @@
 #define CAM_VFLIP 0    // 1 = flip vertically
 #define CAM_HMIRROR 0  // 1 = mirror horizontally
 
+// No rotation knob here on purpose: the OV2640 cannot rotate, only flip and
+// mirror, and doing it on this chip would mean decoding, rotating and
+// re-encoding every JPEG. A rotated mount is corrected in the viewer - see the
+// transform on #v in web_page.h, currently set for a 90-degree CCW mount.
+
 // ---------------------------------------------------------------------------
 //  Networking
 // ---------------------------------------------------------------------------

@@ -55,7 +55,16 @@ static const char kViewerHtml[] = R"HTML(<!DOCTYPE html><html><head>
 html,body{margin:0;height:100%;background:#000;overflow:hidden;color:#fff;
   font:600 15px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   -webkit-user-select:none;user-select:none;touch-action:none;overscroll-behavior:none}
-#v{position:fixed;inset:0;width:100%;height:100%;object-fit:contain}
+/* The camera is bolted on turned 90 degrees counter-clockwise, so the picture
+   is turned back the other way here. It is done in CSS because the OV2640 has
+   no rotate - it does h-mirror and v-flip only - and rotating JPEG on the ESP32
+   would mean decode, rotate and re-encode every frame. The phone's compositor
+   does it for nothing.
+   The box is deliberately 100vh wide by 100vw tall: those are the viewport's
+   dimensions swapped, so that once rotated the element covers the screen the
+   right way round. The other way round is 90deg. */
+#v{position:fixed;left:50%;top:50%;width:100vh;height:100vw;object-fit:contain;
+  transform:translate(-50%,-50%) rotate(-90deg)}
 .pill{position:fixed;top:calc(env(safe-area-inset-top) + 10px);z-index:2;
   padding:5px 11px;border-radius:99px;background:#000a;font-size:12px;letter-spacing:.04em}
 #s{left:10px}

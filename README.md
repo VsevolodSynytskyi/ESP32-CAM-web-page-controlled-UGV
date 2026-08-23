@@ -24,6 +24,21 @@ Join `UGV` (password `letmecontrolit`), open `http://192.168.4.1/`.
 
 Video is served from **port 81**, the page and control socket from port 80.
 
+### The camera is mounted sideways
+
+It sits on the chassis turned 90° counter-clockwise, and the page turns the
+picture back with a CSS `rotate(-90deg)` on the `<img>`. That correction lives in
+the viewer rather than the firmware because the **OV2640 cannot rotate** — it
+offers h-mirror and v-flip only (`CAM_HMIRROR`, `CAM_VFLIP`), and doing a real
+rotation on the ESP32 would mean decoding, rotating and re-encoding every JPEG.
+The phone's compositor does it for free.
+
+Two consequences. The `<img>` is sized `100vh` wide by `100vw` tall — the
+viewport's dimensions swapped — so that it covers the screen correctly *after*
+the rotation; that is not a typo. And the corrected picture is 3:4 portrait, so
+holding the phone in landscape pillarboxes it. `object-fit: contain` keeps the
+whole frame; swap it for `cover` to fill the screen and crop instead.
+
 ### The joystick
 
 One square pad at the bottom of the page, crosshaired into quadrants. Up and down
@@ -318,6 +333,21 @@ out the ESP; ramping toward zero runs ~4× faster so stops feel immediate.
 worth as much as the tick that enforces it, and `loop()` sits *below* the
 streaming task — a stall there would leave the last throttle latched on the
 motors for the duration. `motors_start_task()` pins it to core 1 at priority 6.
+
+**A cold power-on is not a reset, and the camera knows it.** `esp_camera_init()`
+can fail on the first boot after power is applied and then succeed the moment you
+press RST — the sensor's own regulators and its internal power-on reset need time
+a warm restart has already spent. This presented as *the WiFi network never
+appears until you press reset*, which points nowhere near the camera.
+`camera_begin()` now retries `CAM_INIT_ATTEMPTS` times with an
+`esp_camera_deinit()` between tries, which costs nothing on a healthy boot.
+
+**A camera fault is reported, not fatal.** The old boot order halted on a failed
+init, and since the camera comes up before the radio, that killed the AP too —
+a board with no network, no serial reachable over the air, and no way to reflash
+it in place. The radio is how you reach the vehicle; it outranks the sensor.
+`camera_ready()` lets `/stream` answer 503 instead of timing out, so the page,
+the joystick and the motors all still work with no camera attached.
 
 ## Known constraints
 
