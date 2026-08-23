@@ -104,7 +104,7 @@
 // ---------------------------------------------------------------------------
 //  Motor control scale and limits
 //
-//  Everything is signed end to end: slider value, WebSocket payload, and duty.
+//  Everything is signed end to end: mixed stick value, WebSocket payload, duty.
 //  The sign alone selects direction, so a direction bit can never disagree
 //  with a magnitude.
 //
@@ -114,15 +114,22 @@
 // ---------------------------------------------------------------------------
 #define MOTOR_SCALE 1000
 
-// Duty ceiling. 2S is 8.4V fresh off the charger; the common 3-6V TT
-// gearmotors will cook at full duty. 0.55 * 8.4V ~= 4.6V average.
+// Duty ceiling, applied inside motors_set() so no caller can bypass it. 2S is
+// 8.4V fresh off the charger, so this sets the average across the motor:
+// 0.8 * 8.4V ~= 6.7V.
 //
-//  >>> Raise this only after measuring the motors' voltage rating and stall
-//  >>> current. The TB6612FNG is 1.2A continuous / 3.2A peak per channel.
-#define MOTOR_MAX_DUTY 0.55f
+// Measured on this build: 6.3 ohm winding (6.6 ohm at the meter, less 0.3 ohm
+// of lead). Worst case is a stall at 6.7 / 6.3 = 1.07A, inside the TB6612FNG's
+// 1.2A continuous and well under its 3.2A peak. Current is not what binds here.
+//
+//  >>> The motors' own voltage rating is still unmeasured. If they turn out to
+//  >>> be the common 3-6V TT gearmotors this is ~12% over - fine for the short
+//  >>> bursts this vehicle does, not for continuous running. Back it off if
+//  >>> they get hot.
+#define MOTOR_MAX_DUTY 0.8f
 
 // Band around zero treated as a hard stop, in MOTOR_SCALE units. Makes
-// "slider centre = stop" a reliable band rather than a single pixel.
+// "stick centre = stop" a reliable band rather than a single pixel.
 #define MOTOR_DEADBAND 40
 
 // Slow decay (default): current recirculates through the low-side FETs, so
@@ -138,9 +145,9 @@
 //  Slew rate limiting - applied in motors_tick()
 //
 //  Asymmetric on purpose. Ramping up slowly is what stops motor inrush from
-//  browning out the ESP32; ramping down fast is what makes releasing a slider
-//  feel instant. Since the sliders spring back to centre, deceleration is the
-//  common case.
+//  browning out the ESP32; ramping down fast is what makes letting go of the
+//  stick feel instant. Since the stick springs back to centre, deceleration is
+//  the common case.
 // ---------------------------------------------------------------------------
 #define MOTOR_TICK_HZ 50                  // 20 ms per tick
 #define MOTOR_SLEW_UP_PER_TICK 50         // ~400 ms from stop to full throttle
@@ -157,7 +164,7 @@
 
 // Minimum duty at which each side actually starts turning, in MOTOR_SCALE
 // units. Non-zero commands are remapped onto [min .. MOTOR_SCALE] so even the
-// gentlest slider movement produces motion instead of a stall whine.
+// gentlest stick movement produces motion instead of a stall whine.
 //
 // Four values, not two: forward and reverse differ per side because of gearbox
 // preload and brush wear. A single per-side figure makes the vehicle pull to

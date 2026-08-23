@@ -4,14 +4,14 @@ Two-motor UGV: AI-Thinker ESP32-CAM on an ESP32-CAM-MB USB shield, two DC
 motors through a TB6612FNG, 2S 18650 pack through a 5V buck converter. The
 vehicle hosts its own WiFi network and streams live video to a phone browser.
 
-Chassis is undecided - the differential drive and the twin-slider control scheme
-suit tracks or skid-steer wheels equally, so nothing here assumes either.
+Chassis is undecided - the differential drive and the joystick mixing suit
+tracks or skid-steer wheels equally, so nothing here assumes either.
 
-**Working:** camera, SoftAP, MJPEG video at VGA, and hold-to-run motor test
-buttons on the page — forward and back per motor, enough to check the wiring,
-the direction of each side and the battery under load, all at once.
-**Next:** replacing those buttons with twin spring-to-centre throttle sliders.
-The firmware side is already the real thing; only `web_page.h` changes.
+**Working:** camera, SoftAP, MJPEG video at VGA, and a joystick on the page that
+mixes throttle and steering into both tracks — enough to drive the vehicle, and
+to check the wiring, the direction of each side and the battery under load.
+**Next:** a chassis, and re-testing what the buck converter does to WiFi now that
+the 3.3V rail is healthy again.
 
 ## Build
 
@@ -24,21 +24,49 @@ Join `UGV` (password `letmecontrolit`), open `http://192.168.4.1/`.
 
 Video is served from **port 81**, the page and control socket from port 80.
 
-### The test buttons
+### The joystick
 
-Four buttons, forward and back for motor A and motor B, labelled to match the
-TB6612FNG silkscreen — when a motor turns the wrong way, the label has to name
-the thing you rewire. Press both forwards together to drive straight; press
-opposite ones to pivot.
+One square pad at the bottom of the page, crosshaired into quadrants. Up and down
+is throttle, left and right is steering, and the pad mixes the two into a speed
+for each track. Left is channel A (`AO1`/`AO2`), right is channel B
+(`BO1`/`BO2`); the readout in the top corner names them the same way, so a motor
+turning the wrong way names the thing you rewire.
 
-**Hold to run — nothing latches.** Releasing the button, sliding a thumb off it,
-backgrounding the page or losing WiFi all mean stop, and `motors_tick()` stops
-the vehicle by itself after `CMD_TIMEOUT_MS` (300 ms) if no command arrives. The
-page re-sends the held state at 10 Hz to stay ahead of that.
+| stick | left (A) | right (B) | |
+|---|---|---|---|
+| top centre | +1.00 | +1.00 | straight forward |
+| bottom centre | −1.00 | −1.00 | straight back |
+| centre left | −1.00 | +1.00 | pivot counter-clockwise |
+| centre right | +1.00 | −1.00 | pivot clockwise |
+| top left | +0.50 | +1.00 | curve left |
+| top right | +1.00 | +0.50 | curve right |
+| bottom left | −0.50 | −1.00 | reverse, tail to the left |
+| bottom right | −1.00 | −0.50 | reverse, tail to the right |
 
-Full press is `MOTOR_SCALE`, which `MOTOR_MAX_DUTY` then caps at 55% duty. The
-slew limiter ramps up over ~400 ms, so first power-on shouldn't brown out — if
-it does, that is the bulk capacitor, not the code.
+Everything between those is a linear blend of two behaviours, weighted by how far
+up or down the stick is: a pure pivot along the centre row, a curve with the
+inner track at half speed along the top and bottom edges. Both outputs are
+provably inside ±1 over the whole square, so there is no normalisation pass to
+get wrong. The formulas are at the top of `web_page.h`.
+
+**Steering is car-like in reverse** — pushing left always slows the left track, so
+backing up swings the tail toward the stick and the nose away from it. That has
+one visible consequence: yaw changes sense partway down the left and right edges,
+at y = −0.8. It follows from asking for a pivot at centre-left and a curve the
+other way at bottom-left; any continuous mix between the two has to cross zero
+somewhere. Mirroring x when y < 0 removes it and costs the car-like feel.
+
+**Nothing latches.** Letting go re-centres the stick, and backgrounding the page
+or losing WiFi mean stop too. `motors_tick()` stops the vehicle by itself after
+`CMD_TIMEOUT_MS` (300 ms) if no command arrives; the page sends at 20 Hz to stay
+six frames ahead of that. Sliding a thumb past the edge of the pad is a
+full-deflection hold, not a release — pointer capture keeps the events coming and
+the value clamps to the edge.
+
+Full deflection is `MOTOR_SCALE`, which `MOTOR_MAX_DUTY` then caps at 80% duty —
+about 6.7 V average off a full 2S pack, and a 1.07 A stall into the measured
+6.3 Ω winding. The slew limiter ramps up over ~400 ms, so moving off shouldn't
+brown out — if it does, that is the bulk capacitor, not the code.
 
 ---
 
@@ -93,7 +121,8 @@ reason: it has to answer while a frame is going out. Handlers on port 80 must
 stay quick — they share one dispatch task with each other.
 
 Commands are **two signed bytes, left then right, each −100…+100**, with the
-sign carrying direction. That is the format the sliders will use unchanged.
+sign carrying direction. All the mixing happens in the page; nothing downstream
+of this socket knows there is a joystick rather than two throttles.
 
 Each instance also needs its own `ctrl_port`; they all default to 32768, so a
 second instance silently fails to start unless it is bumped.
@@ -150,12 +179,12 @@ Breakouts usually expose two or three `GND` pins. They are one net internally �
 use a single one, wired to the star.
 
 **`STBY` low is the silent failure.** The driver sits in standby with every
-output high-impedance: the page's buttons work, the firmware logs normally, no
+output high-impedance: the joystick works, the firmware logs normally, no
 error appears anywhere, and the motors simply never turn. `PWMA`/`PWMB` do the
 same thing per channel.
 
 **`VM` and `VCC` sit next to each other** on most boards. `VM` on 3V3 gives the
-motor 0.55 × 3.3 ≈ 1.8 V — it buzzes and won't turn. `VCC` on the pack is worse.
+motor 0.8 × 3.3 ≈ 2.6 V — it buzzes and won't turn. `VCC` on the pack is worse.
 
 To reverse a motor, swap its two output wires (`AO1`↔`AO2`) or flip
 `MOTOR_INVERT_L`/`MOTOR_INVERT_R` in [config.h](include/config.h). Don't do both.
@@ -242,13 +271,24 @@ feed 5 V into 3V3. **USB and the buck must not both drive the 5 V pin** — they
 are the same node with nothing between them. On the bench, USB for the ESP and
 battery for VM only; the grounds are already common through the buck.
 
-### Motors are still unmeasured
+### What the motors were measured at
 
-`MOTOR_MAX_DUTY` is `0.55f` (~4.6 V average) — safe for almost anything, but
-stall current is unknown against the TB6612FNG's **1.2 A continuous** limit, and
-stall current is the binding constraint. Measure winding resistance across the
-terminals and compute `I_stall ≈ 8.4 V ÷ R`. Over ~1.5 A means the driver is
-undersized.
+Winding resistance across the terminals is **6.3 Ω** — 6.6 Ω at the meter, less
+0.3 Ω of lead, which you find by shorting the probes together first. That makes
+stall current the thing to check against the TB6612FNG's **1.2 A continuous**
+limit, because stall is the binding constraint, not voltage:
+
+```
+I_stall = MOTOR_MAX_DUTY × 8.4 V ÷ 6.3 Ω = 0.8 × 8.4 ÷ 6.3 = 1.07 A
+```
+
+Inside the limit, so `MOTOR_MAX_DUTY` is `0.8f`. Anything over ~1.5 A would mean
+the driver is undersized.
+
+**The motors' own voltage rating is still unknown.** 80% of a full 2S pack is
+~6.7 V average. If these are the common 3-6 V TT gearmotors that is ~12% over —
+fine for the short bursts this vehicle does, not for continuous running. If they
+get hot, that number is why.
 
 ---
 
@@ -306,6 +346,6 @@ src/
   motors.{h,cpp}            LEDC, signed control, slew limiting, failsafe
   net.{h,cpp}               station + SoftAP, harmonic-aware channel choice
   web_server.{h,cpp}        page and /control WebSocket on :80
-  web_page.h                the page: video, test buttons, control link
+  web_page.h                the page: video, joystick and mixing, control link
   stream_server.{h,cpp}     MJPEG on :81
 ```

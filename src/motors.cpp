@@ -97,7 +97,7 @@ static int16_t clamp_scale(int32_t v) {
 }
 
 // Remaps a non-zero command from (MOTOR_DEADBAND, MOTOR_SCALE] onto
-// [min_move, MOTOR_SCALE], so the gentlest slider movement produces motion
+// [min_move, MOTOR_SCALE], so the gentlest stick movement produces motion
 // rather than a stall whine.
 //
 // min_move must be measured with the same MOTOR_MAX_DUTY in place as it will
@@ -128,7 +128,7 @@ static int16_t apply_ceiling(int16_t cmd) {
 // Asymmetric slew. Growing the magnitude is what draws inrush current and
 // browns out the ESP32, so that is rate-limited hard. Shrinking it - including
 // crossing zero, where the first job is to get to zero - runs much faster,
-// because with spring-to-centre sliders deceleration is the common case and has
+// because with a spring-to-centre stick deceleration is the common case and has
 // to feel immediate.
 static int16_t slew_toward(int16_t applied, int16_t target) {
   if (applied == target) return applied;
@@ -190,7 +190,7 @@ void motors_set(int16_t left, int16_t right) {
   if (MOTOR_INVERT_L) l = (int16_t)-l;
   if (MOTOR_INVERT_R) r = (int16_t)-r;
 
-  // A thumb resting near the middle of a slider must mean stop, not a stall
+  // A thumb resting near the middle of the pad must mean stop, not a stall
   // whine. This is what makes "centre = stop" a band rather than a pixel.
   if (l > -MOTOR_DEADBAND && l < MOTOR_DEADBAND) l = 0;
   if (r > -MOTOR_DEADBAND && r < MOTOR_DEADBAND) r = 0;

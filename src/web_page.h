@@ -1,48 +1,87 @@
 #pragma once
 
-// The viewer page: full-screen video with a motor test pad over it.
+// The viewer page: full-screen video with one joystick pad over it.
 //
-// Four hold-to-run buttons, forward and back per motor, labelled A and B to
-// match the TB6612FNG silkscreen - when a motor spins the wrong way, the label
-// has to name the thing you rewire.
+// A single square pad, crosshaired into quadrants, drives both tracks. Vertical
+// deflection is throttle, horizontal is steering, and the mix between them is
+// the whole design.
 //
-// Nothing latches. Releasing a button, losing the pointer, hiding the page or
+// Left is channel A (AO1/AO2), right is channel B (BO1/BO2). The readout names
+// them the same way, so a motor turning the wrong way names the thing you
+// rewire without anyone having to trace a cable.
+//
+//   MIXING
+//
+//   x runs -1 (left) to +1 (right), y runs -1 (bottom) to +1 (top).
+//
+//     inner = 1 - |x|/2        the inner track's share of throttle
+//     spin  = x * (1 - |y|)    opposed-track authority, full at the centre row
+//
+//     x >= 0:  L = y         + spin,   R = y * inner - spin
+//     x <  0:  L = y * inner + spin,   R = y         - spin
+//
+//   Two behaviours blended by |y|: along the centre row it is a pure pivot with
+//   the tracks fully opposed, along the top and bottom edges it is a curve with
+//   the outer track at full and the inner at half. Everything between is a
+//   linear blend of the two, which is why this needs no trig and no square root.
+//
+//   Both outputs stay inside [-1, +1] over the whole square - for x,y >= 0,
+//   L = x(1-y) + y is a convex combination of x and 1, and R is monotone in y
+//   between -x and 1 - x/2. So there is no normalisation pass to get wrong.
+//
+//     top centre    ( 0, +1)   L +1.00  R +1.00   straight forward
+//     bottom centre ( 0, -1)   L -1.00  R -1.00   straight back
+//     centre left   (-1,  0)   L -1.00  R +1.00   pivot counter-clockwise
+//     centre right  (+1,  0)   L +1.00  R -1.00   pivot clockwise
+//     top left      (-1, +1)   L +0.50  R +1.00   curve left
+//     top right     (+1, +1)   L +1.00  R +0.50   curve right
+//     bottom left   (-1, -1)   L -0.50  R -1.00   reverse, tail to the left
+//     bottom right  (+1, -1)   L -1.00  R -0.50   reverse, tail to the right
+//
+//   Steering is car-like in reverse: pushing left always slows the left track,
+//   so backing up swings the tail toward the stick and the nose away from it.
+//   The price is that yaw changes sense partway down the left and right edges
+//   (at y = -0.8). That is forced by the two endpoints above - a pivot one way
+//   at the centre and a curve the other way at the corner - not a defect in the
+//   mix. Mirroring x when y < 0 removes it and costs the car-like feel.
+//
+// Nothing latches. Releasing the pad, losing the pointer, hiding the page or
 // dropping the socket all mean stop, and the firmware stops by itself after
-// CMD_TIMEOUT_MS regardless. This is the same contract the spring-to-centre
-// sliders will run on, so only this file changes when they land.
+// CMD_TIMEOUT_MS regardless.
 static const char kViewerHtml[] = R"HTML(<!DOCTYPE html><html><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <title>UGV GCS</title><style>
 html,body{margin:0;height:100%;background:#000;overflow:hidden;color:#fff;
-  font:600 15px/1 -apple-system,system-ui,sans-serif;
+  font:600 15px/1 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   -webkit-user-select:none;user-select:none;touch-action:none;overscroll-behavior:none}
 #v{position:fixed;inset:0;width:100%;height:100%;object-fit:contain}
-#s{position:fixed;top:calc(env(safe-area-inset-top) + 10px);left:10px;z-index:2;
+.pill{position:fixed;top:calc(env(safe-area-inset-top) + 10px);z-index:2;
   padding:5px 11px;border-radius:99px;background:#000a;font-size:12px;letter-spacing:.04em}
+#s{left:10px}
 #s.on{color:#4ade80}
 #s.off{color:#f87171}
-#c{position:fixed;left:0;right:0;bottom:0;z-index:2;display:flex;gap:10px;justify-content:center;
-  padding:10px 10px calc(env(safe-area-inset-bottom) + 10px)}
-.g{flex:1;max-width:210px;padding:8px;border-radius:14px;background:#000a}
-.g b{display:block;padding-bottom:2px;font-size:11px;letter-spacing:.12em;opacity:.55;text-align:center}
-button{display:block;width:100%;margin-top:6px;padding:15px 0;border-radius:10px;
-  font:inherit;font-size:16px;color:#fff;background:#2a2f3a;border:1px solid #4b5563;
-  touch-action:none;-webkit-tap-highlight-color:transparent}
-button.hot{background:#2563eb;border-color:#93c5fd}
+#n{right:10px}
+#n i{font-style:normal;opacity:.45;padding-right:4px}
+#n span{padding-right:10px}
+#n span:last-child{padding-right:0}
+#j{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 14px);z-index:2;
+  width:min(48vmin,260px);aspect-ratio:1;transform:translateX(-50%);
+  border-radius:16px;border:1px solid #ffffff33;touch-action:none;
+  -webkit-tap-highlight-color:transparent;
+  background:
+    linear-gradient(#ffffff2b,#ffffff2b) center/100% 1px no-repeat,
+    linear-gradient(#ffffff2b,#ffffff2b) center/1px 100% no-repeat,
+    #000000a6}
+#k{position:absolute;left:50%;top:50%;width:24%;aspect-ratio:1;
+  border-radius:50%;background:#fff;transform:translate(-50%,-50%);
+  box-shadow:0 0 0 1px #00000059,0 2px 7px #00000073;transition:width .08s ease-out}
+#j.hot #k{width:29%}
 </style></head><body>
 <img id="v" alt="">
-<div id="s" class="off">connecting</div>
-<div id="c">
-  <div class="g"><b>MOTOR A</b>
-    <button data-m="l" data-d="1">&#9650; forward</button>
-    <button data-m="l" data-d="-1">&#9660; back</button>
-  </div>
-  <div class="g"><b>MOTOR B</b>
-    <button data-m="r" data-d="1">&#9650; forward</button>
-    <button data-m="r" data-d="-1">&#9660; back</button>
-  </div>
-</div>
+<div id="s" class="pill off">connecting</div>
+<div id="n" class="pill"><span><i>L</i><b id="nl">+000</b></span><span><i>R</i><b id="nr">+000</b></span></div>
+<div id="j"><div id="k"></div></div>
 <script>
 var FULL = 100;  // wire units: +-100 is full scale, see web_server.cpp
 
@@ -56,15 +95,13 @@ startVideo();
 
 // --- control link ----------------------------------------------------------
 var st = document.getElementById('s');
-var btns = [].slice.call(document.querySelectorAll('button'));
-var held = {};
 var ws = null;
 
 function connect() {
   ws = new WebSocket('ws://' + location.host + '/control');
-  ws.onopen = function () { st.textContent = 'linked'; st.className = 'on'; };
+  ws.onopen = function () { st.textContent = 'linked'; st.className = 'pill on'; };
   ws.onclose = function () {
-    st.textContent = 'reconnecting'; st.className = 'off';
+    st.textContent = 'reconnecting'; st.className = 'pill off';
     release();
     setTimeout(connect, 1000);
   };
@@ -72,43 +109,83 @@ function connect() {
 }
 connect();
 
+// --- joystick --------------------------------------------------------------
+var pad = document.getElementById('j'), knob = document.getElementById('k');
+var nl = document.getElementById('nl'), nr = document.getElementById('nr');
+var jx = 0, jy = 0;      // stick position, -1..+1 per axis
+var cl = 0, cr = 0;      // mixed wire values, what send() will put on the socket
+var pid = null;          // the one pointer that owns the pad
+
+function clamp1(n) { return n < -1 ? -1 : n > 1 ? 1 : n; }
+
+function fmt(n) { return (n < 0 ? '-' : '+') + ('00' + Math.abs(n)).slice(-3); }
+
+// The mix. See the table at the top of this file.
+function apply() {
+  var inner = 1 - Math.abs(jx) / 2;
+  var spin  = jx * (1 - Math.abs(jy));
+  var l, r;
+  if (jx >= 0) { l = jy + spin;         r = jy * inner - spin; }
+  else         { l = jy * inner + spin; r = jy - spin; }
+  // Both are already inside +-1; the clamp is here to make that a fact of the
+  // wire format rather than a property of the algebra above.
+  cl = Math.max(-FULL, Math.min(FULL, Math.round(l * FULL)));
+  cr = Math.max(-FULL, Math.min(FULL, Math.round(r * FULL)));
+  knob.style.left = (50 + jx * 50) + '%';
+  knob.style.top  = (50 - jy * 50) + '%';
+  nl.textContent = fmt(cl);
+  nr.textContent = fmt(cr);
+}
+
 function send() {
   if (!ws || ws.readyState !== 1) return;
-  var l = (held.l1 ? FULL : 0) + (held['l-1'] ? -FULL : 0);
-  var r = (held.r1 ? FULL : 0) + (held['r-1'] ? -FULL : 0);
-  ws.send(new Int8Array([l, r]));
+  ws.send(new Int8Array([cl, cr]));
 }
 
-function paint() {
-  btns.forEach(function (b) { b.classList.toggle('hot', !!held[b.dataset.m + b.dataset.d]); });
+function grab(e) {
+  var b = pad.getBoundingClientRect();
+  // Screen y grows downward, stick y grows up - hence the reversed subtraction.
+  jx = clamp1((e.clientX - (b.left + b.width  / 2)) / (b.width  / 2));
+  jy = clamp1(((b.top + b.height / 2) - e.clientY) / (b.height / 2));
+  apply();
 }
 
-function hold(b, on) {
-  var k = b.dataset.m + b.dataset.d;
-  if (!!held[k] === on) return;
-  if (on) held[k] = 1; else delete held[k];
-  paint();
-  send();  // out of band, so press and release both act now, not on the next tick
+function release() {
+  pid = null; jx = 0; jy = 0;
+  pad.classList.remove('hot');
+  apply();
+  send();  // out of band, so letting go stops now rather than on the next tick
 }
 
-function release() { held = {}; paint(); send(); }
-
-btns.forEach(function (b) {
-  b.addEventListener('pointerdown', function (e) {
-    e.preventDefault();
-    b.setPointerCapture(e.pointerId);
-    hold(b, true);
-  });
-  ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (ev) {
-    b.addEventListener(ev, function () { hold(b, false); });
-  });
-  b.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+pad.addEventListener('pointerdown', function (e) {
+  e.preventDefault();
+  if (pid !== null) return;  // a second thumb does not get to steal the stick
+  pid = e.pointerId;
+  pad.setPointerCapture(pid);
+  pad.classList.add('hot');
+  grab(e);
+  send();
 });
 
-// A held button has to keep saying so or the firmware failsafe stops it. This
-// also re-sends the zeroes, which costs nothing and covers a release whose
-// out-of-band send was dropped.
-setInterval(send, 100);
+// Capture keeps these coming once the thumb slides off the pad, where grab()
+// clamps to the edge. Sliding out is a full-deflection hold, not a release.
+pad.addEventListener('pointermove', function (e) {
+  if (e.pointerId !== pid) return;
+  e.preventDefault();
+  grab(e);
+});
+
+['pointerup', 'pointercancel', 'lostpointercapture'].forEach(function (ev) {
+  pad.addEventListener(ev, function (e) { if (e.pointerId === pid) release(); });
+});
+pad.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+apply();
+
+// Movement rides this tick rather than going out per pointermove: a phone can
+// fire those at 120Hz, and the socket does not need to hear about all of it.
+// 20Hz also keeps three frames of margin under the CMD_TIMEOUT_MS failsafe.
+setInterval(send, 50);
 
 // Do not trust the page to stay in front of you.
 addEventListener('pagehide', release);
