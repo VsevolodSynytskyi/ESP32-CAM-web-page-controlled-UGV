@@ -17,10 +17,10 @@ bool stream_server_has_client();
 
 // The most recent stats window as a short line, e.g.
 //
-//   12.4fps  27.3kB  338kB/s  busy98%  rssi-43
+//   15.0fps  6.0kB  90kB/s  busy45%  rssi-44  ch1
 //
-// Empty when nothing is streaming. This exists because the MB shield occupies
-// the very header pins the motors and the buck need, so the vehicle can be on
-// battery or on serial but never both - and every number worth having is only
-// true on battery. The page asks for this over the control socket instead.
+// Empty when nothing is streaming. It goes to the page rather than only to
+// serial because the MB shield occupies the very header pins the motors and the
+// buck need: the vehicle can be on battery or on serial, never both, and the
+// numbers are only true on battery.
 void stream_server_stats(char *out, size_t len);

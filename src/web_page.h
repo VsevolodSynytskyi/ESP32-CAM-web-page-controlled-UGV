@@ -71,11 +71,10 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;color:#fff;
 #s.on{color:#4ade80}
 #s.off{color:#f87171}
 #n{right:10px}
-/* Under the status pill, and gone entirely when the firmware has nothing to
-   report - which is most of the time the stream is not running. */
-#d{left:10px;top:calc(env(safe-area-inset-top) + 40px);font-size:11px;opacity:.72}
-#d:empty{display:none}
-#n i{font-style:normal;opacity:.45;padding-right:4px}
+/* <b> and <i> carry weight and slant from the UA sheet; both readouts have to
+   match the status pill, which is just the page font. */
+#n b{font-weight:inherit}
+#n i{font-style:normal;font-weight:inherit;opacity:.45;padding-right:4px}
 #n span{padding-right:10px}
 #n span:last-child{padding-right:0}
 #j{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom) + 14px);z-index:2;
@@ -93,18 +92,18 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;color:#fff;
 </style></head><body>
 <img id="v" alt="">
 <div id="s" class="pill off">connecting</div>
-<div id="d" class="pill"></div>
 <div id="n" class="pill"><span><i>L</i><b id="nl">+000</b></span><span><i>R</i><b id="nr">+000</b></span></div>
 <div id="j"><div id="k"></div></div>
 <script>
 var FULL = 100;  // wire units: +-100 is full scale, see web_server.cpp
 
-// Everything the overlay shows also goes to the console, stamped with seconds
-// since the page loaded. The overlay is one line that keeps overwriting itself;
-// this is the same run as a transcript you can select and paste. One string per
-// call, so a copied block stays one line per event.
+// Diagnostics go to the console rather than on top of the picture. Stamped with
+// seconds since load, one string per call so a copied block stays one line per
+// event, and styled to match the page - devtools does not copy the %c directive
+// itself, so a pasted block is still plain text.
+var LOGCSS = 'font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-weight:600';
 function log(msg) {
-  console.log('[' + (performance.now() / 1000).toFixed(1) + 's] ' + msg);
+  console.log('%c[' + (performance.now() / 1000).toFixed(1) + 's] ' + msg, LOGCSS);
 }
 
 // --- video -----------------------------------------------------------------
@@ -117,35 +116,28 @@ startVideo();
 
 // --- control link ----------------------------------------------------------
 var st = document.getElementById('s');
-var dg = document.getElementById('d');
 var ws = null;
 var pingAt = 0;  // performance.now() of the probe still in flight, 0 if none
-var rttPeak = 0; // worst round trip since the link came up
 
 function connect() {
   ws = new WebSocket('ws://' + location.host + '/control');
   ws.onopen = function () {
-    pingAt = 0; rttPeak = 0; dg.textContent = '';
+    pingAt = 0;
     st.textContent = 'linked'; st.className = 'pill on';
     log('link up');
   };
   // The only thing the firmware ever sends is the answer to a probe, carrying
-  // the stream's stats as its payload. Shown verbatim - the firmware owns the
+  // the stream's stats as its payload. Logged verbatim - the firmware owns the
   // format, so there is nothing here to keep in step with it.
   ws.onmessage = function (e) {
     if (!pingAt) return;
     var rtt = Math.round(performance.now() - pingAt);
     pingAt = 0;
-    if (rtt > rttPeak) rttPeak = rtt;
-    // The peak is the point: an outage is one bad second in twenty, so the live
-    // figure will almost always look fine when you glance at it.
-    st.textContent = 'linked ' + rtt + 'ms  peak' + rttPeak + 'ms';
-    dg.textContent = e.data || '';
+    st.textContent = 'linked'; st.className = 'pill on';
     log('rtt ' + rtt + 'ms  ' + (e.data || 'no stream'));
   };
   ws.onclose = function () {
     st.textContent = 'reconnecting'; st.className = 'pill off';
-    dg.textContent = '';
     log('link down');
     release();
     setTimeout(connect, 1000);
@@ -239,7 +231,9 @@ setInterval(function () {
   if (!ws || ws.readyState !== 1) return;
   if (pingAt) {
     if (performance.now() - pingAt < 3000) return;  // one probe in flight at a time
-    st.textContent = 'linked >3s';
+    // Socket still open but nothing coming back, which is not the same as
+    // linked and not the same as disconnected. Say so rather than lie either way.
+    st.textContent = 'stalled'; st.className = 'pill off';
     log('rtt >3000ms, no reply');
   }
   pingAt = performance.now();

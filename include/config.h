@@ -215,29 +215,12 @@
 // Frame size dominates throughput - bytes scale with pixel count - and on this
 // link it dominates *latency* too, which is why this is QVGA and not VGA.
 //
-// Measured over a 110 s run: the link holds ~280 kB/s when healthy but collapses
-// to ~23 kB/s for seconds at a time, roughly 20% of the time, with no
-// correlation to signal strength at all - the worst stretch was at the best
-// RSSI of the run. During a collapse the handler is blocked in send() at 99%
-// busy, so the time to push one frame simply *is* 1/fps. At VGA's ~21 kB that
-// is ~900 ms for a single frame, which is the 1-2 s lag you can see.
+// Measured, same room and client: VGA gave ~21 kB a frame at 12 fps with the
+// link pinned at 99% busy; QVGA gives ~6 kB at 30 fps with busy down to 85-96%.
 //
-// Worst-case latency does NOT scale with this. That was predicted and then
-// measured wrong, so it is written down rather than quietly dropped: the
-// collapses are outages, not a reduced rate. The link goes away for a second or
-// two and nothing crosses at any frame size - at QVGA the worst single frame
-// was still ~1100 ms, no better than VGA's ~910 ms. The 1-byte control probe
-// stalled 1807 ms in the same run, which is what proves it is the air and not
-// the byte count.
-//
-// What the change did buy, same room, same client:
-//
-//                  kB/frame   typical fps   busy when healthy
-//   VGA  640x480     ~21          12            99%
-//   QVGA 320x240      ~6          30          85-96%
-//
-// Much smoother, and enough headroom appeared that the link is no longer pinned
-// at 99%. The outages are untouched and have to be found separately.
+// What it does not fix is the floor. The collapses are outages rather than a
+// reduced rate - the link goes away for a second or two and nothing crosses at
+// any frame size - so the worst single frame stayed near a second either way.
 //
 // The sensor is still initialised at the largest size PSRAM allows and stepped
 // down here, so raising this later always fits.
@@ -250,6 +233,19 @@
 
 // Two, matching the stock CameraWebServer. GRAB_LATEST needs at least two.
 #define CAM_FB_COUNT 2
+
+// Frames per second the streamer will send at most. 0 disables pacing.
+//
+// The handler is otherwise greedy - it grabs a frame the instant the last one
+// is away - which pins the link at 90-99% busy. A link with no headroom turns
+// every retransmission burst into queueing delay instead of soaking it up, and
+// that queueing was the visible lag.
+//
+// At QVGA's ~6 kB a frame, 15 fps is ~90 kB/s against a link that manages ~200:
+// measured at 45% busy, steady, and the lag is gone. Raise it until the lag
+// comes back, then step down one. 30 fps was only ever a side effect of asking
+// the link for everything it had.
+#define STREAM_MAX_FPS 15
 
 // How often the stream prints what it is actually achieving. The interesting
 // figure is "link busy" - the share of wall clock the handler spends blocked
