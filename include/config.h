@@ -212,8 +212,36 @@
 // channel choice moves with it.
 #define CAM_XCLK_HZ 24000000
 
-// Frame size dominates throughput - bytes scale with pixel count.
-#define CAM_FRAMESIZE FRAMESIZE_VGA  // 640x480
+// Frame size dominates throughput - bytes scale with pixel count - and on this
+// link it dominates *latency* too, which is why this is QVGA and not VGA.
+//
+// Measured over a 110 s run: the link holds ~280 kB/s when healthy but collapses
+// to ~23 kB/s for seconds at a time, roughly 20% of the time, with no
+// correlation to signal strength at all - the worst stretch was at the best
+// RSSI of the run. During a collapse the handler is blocked in send() at 99%
+// busy, so the time to push one frame simply *is* 1/fps. At VGA's ~21 kB that
+// is ~900 ms for a single frame, which is the 1-2 s lag you can see.
+//
+// Worst-case latency does NOT scale with this. That was predicted and then
+// measured wrong, so it is written down rather than quietly dropped: the
+// collapses are outages, not a reduced rate. The link goes away for a second or
+// two and nothing crosses at any frame size - at QVGA the worst single frame
+// was still ~1100 ms, no better than VGA's ~910 ms. The 1-byte control probe
+// stalled 1807 ms in the same run, which is what proves it is the air and not
+// the byte count.
+//
+// What the change did buy, same room, same client:
+//
+//                  kB/frame   typical fps   busy when healthy
+//   VGA  640x480     ~21          12            99%
+//   QVGA 320x240      ~6          30          85-96%
+//
+// Much smoother, and enough headroom appeared that the link is no longer pinned
+// at 99%. The outages are untouched and have to be found separately.
+//
+// The sensor is still initialised at the largest size PSRAM allows and stepped
+// down here, so raising this later always fits.
+#define CAM_FRAMESIZE FRAMESIZE_QVGA  // 320x240
 
 // 10-63. LOWER is BETTER quality and BIGGER frames. The link saturates around
 // 2.7 Mbit/s either way, so this is purely a detail-vs-frame-rate trade:
@@ -222,6 +250,13 @@
 
 // Two, matching the stock CameraWebServer. GRAB_LATEST needs at least two.
 #define CAM_FB_COUNT 2
+
+// How often the stream prints what it is actually achieving. The interesting
+// figure is "link busy" - the share of wall clock the handler spends blocked
+// handing bytes to the stack. Near 100% means the radio is the bottleneck and
+// latency is queueing delay; well under it means the bytes leave promptly and
+// any lag you see is downstream, in the phone.
+#define STREAM_STATS_MS 2000
 
 // A cold power-on is not a reset. The sensor's own regulators and its internal
 // power-on reset need time that a warm restart has already spent, so the first

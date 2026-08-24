@@ -18,3 +18,11 @@ bool net_begin_sta();
 // could not be brought up.
 bool net_begin_ap();
 
+// The channel actually in use, and whether a CAM_XCLK_HZ harmonic lands inside
+// it. Both go out with the stream stats: the channel is chosen at boot by a
+// scan, and on battery there is no serial port to read that decision from - so
+// without this you cannot tell a congested channel or a self-jammed one from a
+// hardware fault.
+int net_channel();
+bool net_channel_jammed();
+

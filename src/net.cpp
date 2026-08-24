@@ -85,6 +85,18 @@ static bool xclk_harmonic_in_channel(int channel) {
   return false;
 }
 
+int net_channel() {
+  uint8_t primary = 0;
+  wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+  if (esp_wifi_get_channel(&primary, &second) != ESP_OK) return 0;
+  return primary;
+}
+
+bool net_channel_jammed() {
+  const int ch = net_channel();
+  return ch >= 1 && ch <= 14 && xclk_harmonic_in_channel(ch);
+}
+
 static int scan_for_quietest_channel() {
   Serial.println(F("[net] scanning 2.4 GHz for the quietest channel..."));
 

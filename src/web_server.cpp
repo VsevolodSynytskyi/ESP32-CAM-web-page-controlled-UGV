@@ -2,9 +2,11 @@
 
 #include <Arduino.h>
 #include <esp_http_server.h>
+#include <string.h>
 
 #include "config.h"
 #include "motors.h"
+#include "stream_server.h"
 #include "web_page.h"
 
 static httpd_handle_t s_httpd = nullptr;
@@ -42,6 +44,31 @@ static esp_err_t control_handler(httpd_req_t *req) {
   httpd_ws_frame_t frame = {};
   esp_err_t res = httpd_ws_recv_frame(req, &frame, 0);
   if (res != ESP_OK) return res;
+
+  // One byte is the page's latency probe. The round trip measures the same air
+  // the video is queueing in, which is the only way to tell a slow radio apart
+  // from a slow pipeline behind a perfectly good one.
+  //
+  // The reply carries the stream's own numbers back, because on battery there
+  // is no serial port to print them to - the MB shield needs the header pins
+  // the motors and the buck are using. Answering the probe rather than pushing
+  // asynchronously keeps this inside the request the client already made, so
+  // there is no socket handle to store and no frame to send into a closed peer.
+  if (frame.len == 1) {
+    uint8_t ping = 0;
+    frame.payload = &ping;
+    res = httpd_ws_recv_frame(req, &frame, sizeof(ping));
+    if (res != ESP_OK) return res;
+
+    char stats[96];
+    stream_server_stats(stats, sizeof(stats));
+
+    httpd_ws_frame_t pong = {};
+    pong.type = HTTPD_WS_TYPE_TEXT;
+    pong.payload = (uint8_t *)stats;
+    pong.len = strlen(stats);
+    return httpd_ws_send_frame(req, &pong);
+  }
 
   uint8_t buf[2];
   if (frame.len != sizeof(buf)) {

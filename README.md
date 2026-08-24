@@ -7,7 +7,7 @@ vehicle hosts its own WiFi network and streams live video to a phone browser.
 Chassis is undecided - the differential drive and the joystick mixing suit
 tracks or skid-steer wheels equally, so nothing here assumes either.
 
-**Working:** camera, SoftAP, MJPEG video at VGA, and a joystick on the page that
+**Working:** camera, SoftAP, MJPEG video at QVGA, and a joystick on the page that
 mixes throttle and steering into both tracks — enough to drive the vehicle, and
 to check the wiring, the direction of each side and the battery under load.
 **Next:** a chassis, and re-testing what the buck converter does to WiFi now that
@@ -83,6 +83,65 @@ about 6.7 V average off a full 2S pack, and a 1.07 A stall into the measured
 6.3 Ω winding. The slew limiter ramps up over ~400 ms, so moving off shouldn't
 brown out — if it does, that is the bulk capacitor, not the code.
 
+### The overlay, and why the diagnostics are on screen
+
+Top left is the control link — `linked 14ms` is a real round trip, measured by
+the page against a one-byte probe the firmware echoes once a second. Under it,
+whatever the stream last measured:
+
+```
+12.4fps  27.3kB  338kB/s  busy98%  rssi-43
+```
+
+**`busy` is the one that decides things.** It is the share of wall clock the
+stream handler spends *blocked inside the network stack* handing bytes over.
+Near 100% means the radio is the bottleneck and any video lag is queueing delay,
+because everything newer waits behind what is already in flight. Well under it
+means the bytes leave promptly and lag is downstream, in the phone.
+
+Those two together split a latency complaint three ways in one glance:
+
+| busy | RTT | fps | reading |
+|---|---|---|---|
+| ~100% | spikes to 100s of ms | any | link saturated — cut bitrate |
+| ~100% | high | low | RF is the limit — antenna, or noise |
+| < 60% | tens of ms | 20+ | ESP is keeping up; the phone is buffering |
+
+**This is on screen rather than on serial because the vehicle cannot do both.**
+The MB shield occupies the very header pins the motors and the buck are wired
+to, so the board is either on USB with a serial port and no drivetrain, or on
+battery with a drivetrain and no serial — and every number worth having is only
+true on battery. The reply rides the probe the page already sends, so there is
+no stored socket handle and nothing to push into a peer that has gone away.
+
+Every line the overlay shows also goes to the browser console, stamped with
+seconds since page load, one line per event:
+
+```
+[12.0s] link up
+[13.0s] rtt 14ms  12.4fps  27.3kB  338kB/s  busy98%  rssi-43
+[14.0s] rtt 11ms  12.4fps  27.3kB  338kB/s  busy98%  rssi-43
+```
+
+The overlay is a single line that overwrites itself; the console is the same run
+as a transcript you can select and paste. Open the page from a **laptop** joined
+to the vehicle's AP and devtools is right there — which is the point, since the
+laptop can have the network even when it cannot have the serial port.
+
+`stall2/31` counts stats windows that came in under **half** this session's own
+best frame rate, out of the number of windows so far — relative, so it keeps
+meaning the same thing if `CAM_FRAMESIZE` changes. It resets when a client
+connects. `worst4.2fps` is the session floor, and it is needed to read the stall
+count at all: 16/26 windows below half of best means something very different if
+the floor is 15 fps (variance) than if it is 1 fps (the link going away). The status pill's `peak` is the worst round trip since the link came
+up. Both exist so a minute-long run can be judged from one glance at a phone,
+with no console: the outages are one bad second in twenty, so the live figures
+almost always look fine.
+
+One caution on `rssi`: **it is signal, not signal-to-noise.** A noisy buck
+converter raises the noise floor without moving it at all, so a healthy `rssi-40`
+next to bad throughput is evidence of interference, not of a good link.
+
 ---
 
 ## Read this before changing the camera clock
@@ -119,6 +178,92 @@ Symptoms that this is happening: the sensor is perfect in isolation, the radio
 is perfect in isolation, throughput collapses only when both run, and it is
 completely indifferent to channel congestion.
 
+### The antenna-select jumper is on external — confirmed
+
+The AI-Thinker board has a three-pad link beside the U.FL connector that routes
+the radio to *either* the on-board PCB trace *or* the U.FL socket, and it ships
+set to the trace. A plugged-in external antenna on a board still set to the
+trace does nothing at all, silently.
+
+This board is set to **external**, and the proof is that pulling the antenna
+stops the stream completely. If it were on the trace, unplugging would change
+nothing — so the RF path demonstrably runs through the socket. Don't re-open
+this one without new evidence.
+
+### The link collapses, and it is not the signal
+
+Measured over a 110-second run with the overlay logging once a second:
+
+- `busy` never left **93–99%**. The stream task is blocked inside `send()`
+  essentially always, so the bytes are not leaving the ESP32. Whatever the lag
+  is, it is not the phone hoarding frames.
+- Throughput swung **23 → 322 kB/s**, a 14× range, with no let-up in `busy`.
+- Roughly **20% of the run** was spent below 6 fps, in stretches of 2–8 seconds.
+
+**Signal strength does not predict any of it.** Mean RSSI across the ten
+collapsed windows was **−46.6 dBm**; across the eight healthy ones, **−48.4**.
+The collapses had *better* signal. The worst stretch of the run — four
+consecutive windows at 1.0, 4.1, 1.0 and 5.3 fps — sat at −41 to −44 dBm, the
+strongest signal recorded anywhere in it.
+
+So antenna gain, placement and orientation are not the lever here, and neither
+is range. What matches is a contended or noisy channel: clear windows alternating
+with multi-second stalls at perfect signal, which is exactly the failure mode the
+`AP_CHANNEL` comment in [config.h](include/config.h) warns about.
+
+**Where the visible lag comes from.** At 99% busy the time to push one frame
+simply *is* 1/fps. At 1.0 fps a single frame is a full second in flight — that is
+the "1–2 second delay", not a queue and not the browser.
+
+**The collapses are outages, not slow patches.** Dropping VGA → QVGA was
+predicted to cut the worst frame from ~910 ms to ~300 ms on the theory that
+worst-case latency is frame size ÷ collapsed throughput. It did not: the worst
+frame at QVGA was still **~1100 ms**, and in the same run the 1-byte control
+probe took **1807 ms** to round trip. During a collapse the air is simply gone
+for a second or two, and nothing crosses at any frame size.
+
+What QVGA did buy is worth keeping — ~21 kB/frame at 12 fps became ~6 kB at 30,
+and `busy` came off its 99% pin to 85–96%:
+
+| | kB/frame | typical fps | busy when healthy | worst frame |
+|---|---|---|---|---|
+| VGA 640×480 | ~21 | 12 | 99% | ~910 ms |
+| QVGA 320×240 | ~6 | 30 | 85–96% | ~1100 ms |
+
+**The outages are periodic and independent of everything measurable here.**
+Roughly every 10–20 s, lasting about 2 s, at −43 to −49 dBm throughout, on `ch1`
+with no pixel-clock harmonic in it. Every RTT spike is followed one window later
+by an fps collapse, so the same event hits the control socket and the video
+alike.
+
+**The client is not the cause — tested.** A scanning laptop was the obvious
+suspect, since macOS leaves the associated channel to sweep for known networks
+and that produces exactly this shape. Same spot, 60 s each:
+
+| client | stalled windows | peak RTT |
+|---|---|---|
+| phone | 10 / 28 | 238 ms |
+| laptop | 16 / 26 | 187 ms |
+
+The laptop is worse, so some client effect is real, but the phone stalls in
+**36%** of windows too. Most of this is the vehicle.
+
+That run also retired the blackout model. Peak round trip was ~200 ms in both,
+not 1807 — that single spike was an outlier. With small packets crossing
+promptly while the video collapses, the air is not disappearing; it is dropping
+enough packets that a multi-packet frame fails repeatedly while a one-packet
+probe slips through. High packet error rate, not absence of signal, which fits
+the RSSI evidence exactly.
+
+**The camera is ruled out as the limiter.** `busy` stays at 95–99% *through* the
+collapses, and `busy` only counts time inside `send()`. If the sensor were
+failing to produce frames the loop would be waiting in `esp_camera_fb_get()`
+instead and `busy` would fall. It does not.
+
+Still open: whether the buck converter is the noise source. The comparison that
+settles it is USB-only against battery, same spot, 60 seconds each, reading
+`stall` and `worst` off the overlay.
+
 ## Two HTTP servers, not one
 
 An MJPEG response never ends, and `esp_http_server` dispatches every handler
@@ -138,6 +283,10 @@ stay quick — they share one dispatch task with each other.
 Commands are **two signed bytes, left then right, each −100…+100**, with the
 sign carrying direction. All the mixing happens in the page; nothing downstream
 of this socket knows there is a joystick rather than two throttles.
+
+A **one-byte** frame is the latency probe instead. The firmware answers it with
+a text frame carrying the stream's stats, which is how those reach the screen
+with no serial port available — see the overlay section above.
 
 Each instance also needs its own `ctrl_port`; they all default to 32768, so a
 second instance silently fails to start unless it is bumped.

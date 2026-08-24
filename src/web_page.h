@@ -71,6 +71,10 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;color:#fff;
 #s.on{color:#4ade80}
 #s.off{color:#f87171}
 #n{right:10px}
+/* Under the status pill, and gone entirely when the firmware has nothing to
+   report - which is most of the time the stream is not running. */
+#d{left:10px;top:calc(env(safe-area-inset-top) + 40px);font-size:11px;opacity:.72}
+#d:empty{display:none}
 #n i{font-style:normal;opacity:.45;padding-right:4px}
 #n span{padding-right:10px}
 #n span:last-child{padding-right:0}
@@ -89,28 +93,60 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;color:#fff;
 </style></head><body>
 <img id="v" alt="">
 <div id="s" class="pill off">connecting</div>
+<div id="d" class="pill"></div>
 <div id="n" class="pill"><span><i>L</i><b id="nl">+000</b></span><span><i>R</i><b id="nr">+000</b></span></div>
 <div id="j"><div id="k"></div></div>
 <script>
 var FULL = 100;  // wire units: +-100 is full scale, see web_server.cpp
+
+// Everything the overlay shows also goes to the console, stamped with seconds
+// since the page loaded. The overlay is one line that keeps overwriting itself;
+// this is the same run as a transcript you can select and paste. One string per
+// call, so a copied block stays one line per event.
+function log(msg) {
+  console.log('[' + (performance.now() / 1000).toFixed(1) + 's] ' + msg);
+}
 
 // --- video -----------------------------------------------------------------
 // One port up from this page - see the two-instance note in stream_server.h.
 var v = document.getElementById('v');
 var vurl = 'http://' + location.hostname + ':' + (Number(location.port || 80) + 1) + '/stream';
 function startVideo() { v.src = vurl + '?n=' + Date.now(); }
-v.onerror = function () { setTimeout(startVideo, 1000); };
+v.onerror = function () { log('video error, retrying'); setTimeout(startVideo, 1000); };
 startVideo();
 
 // --- control link ----------------------------------------------------------
 var st = document.getElementById('s');
+var dg = document.getElementById('d');
 var ws = null;
+var pingAt = 0;  // performance.now() of the probe still in flight, 0 if none
+var rttPeak = 0; // worst round trip since the link came up
 
 function connect() {
   ws = new WebSocket('ws://' + location.host + '/control');
-  ws.onopen = function () { st.textContent = 'linked'; st.className = 'pill on'; };
+  ws.onopen = function () {
+    pingAt = 0; rttPeak = 0; dg.textContent = '';
+    st.textContent = 'linked'; st.className = 'pill on';
+    log('link up');
+  };
+  // The only thing the firmware ever sends is the answer to a probe, carrying
+  // the stream's stats as its payload. Shown verbatim - the firmware owns the
+  // format, so there is nothing here to keep in step with it.
+  ws.onmessage = function (e) {
+    if (!pingAt) return;
+    var rtt = Math.round(performance.now() - pingAt);
+    pingAt = 0;
+    if (rtt > rttPeak) rttPeak = rtt;
+    // The peak is the point: an outage is one bad second in twenty, so the live
+    // figure will almost always look fine when you glance at it.
+    st.textContent = 'linked ' + rtt + 'ms  peak' + rttPeak + 'ms';
+    dg.textContent = e.data || '';
+    log('rtt ' + rtt + 'ms  ' + (e.data || 'no stream'));
+  };
   ws.onclose = function () {
     st.textContent = 'reconnecting'; st.className = 'pill off';
+    dg.textContent = '';
+    log('link down');
     release();
     setTimeout(connect, 1000);
   };
@@ -195,6 +231,20 @@ apply();
 // fire those at 120Hz, and the socket does not need to hear about all of it.
 // 20Hz also keeps three frames of margin under the CMD_TIMEOUT_MS failsafe.
 setInterval(send, 50);
+
+// Round trip on the control socket, which shares the air with the video. If
+// this stays in the tens of ms while the picture lags, the radio is not what is
+// holding the picture up.
+setInterval(function () {
+  if (!ws || ws.readyState !== 1) return;
+  if (pingAt) {
+    if (performance.now() - pingAt < 3000) return;  // one probe in flight at a time
+    st.textContent = 'linked >3s';
+    log('rtt >3000ms, no reply');
+  }
+  pingAt = performance.now();
+  ws.send(new Int8Array([0]));
+}, 1000);
 
 // Do not trust the page to stay in front of you.
 addEventListener('pagehide', release);
