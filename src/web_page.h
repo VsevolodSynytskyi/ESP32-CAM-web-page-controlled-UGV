@@ -64,7 +64,7 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;color:#fff;
    dimensions swapped, so that once rotated the element covers the screen the
    right way round. The other way round is 90deg. */
 #v{position:fixed;left:50%;top:50%;width:100vh;height:100vw;object-fit:contain;
-  transform:translate(-50%,-50%) rotate(-90deg)}
+  transform:translate(-50%,-50%) rotate(-90deg);pointer-events:none}
 .pill{position:fixed;top:calc(env(safe-area-inset-top) + 10px);z-index:2;
   padding:5px 11px;border-radius:99px;background:#000a;font-size:12px;letter-spacing:.04em}
 #s{left:10px}
@@ -85,7 +85,7 @@ html,body{margin:0;height:100%;background:#000;overflow:hidden;color:#fff;
     linear-gradient(#ffffff2b,#ffffff2b) center/100% 1px no-repeat,
     linear-gradient(#ffffff2b,#ffffff2b) center/1px 100% no-repeat,
     #000000a6}
-#k{position:absolute;left:50%;top:50%;width:24%;aspect-ratio:1;
+#k{position:absolute;left:50%;top:50%;width:24%;aspect-ratio:1;touch-action:none;
   border-radius:50%;background:#fff;transform:translate(-50%,-50%);
   box-shadow:0 0 0 1px #00000059,0 2px 7px #00000073;transition:width .08s ease-out}
 #j.hot #k{width:29%}
@@ -239,6 +239,25 @@ setInterval(function () {
   pingAt = performance.now();
   ws.send(new Int8Array([0]));
 }, 1000);
+
+// iOS Safari has ignored user-scalable=no since iOS 10, and honours touch-action
+// for double-tap zoom inconsistently - so neither the viewport meta nor the
+// touch-action rules above actually stop a thumb jabbing at the pad from zooming
+// the page, with no obvious way back out. Swallowing the second tap of a rapid
+// pair is what reliably stops it. Nothing on this page listens for click, so
+// losing the synthetic one costs nothing.
+var lastTap = 0;
+document.addEventListener('touchend', function (e) {
+  var now = Date.now();
+  if (now - lastTap < 350) e.preventDefault();
+  lastTap = now;
+}, {passive: false});
+
+// Pinch, and the double-tap-then-drag zoom. Safari-only events; harmless where
+// they never fire.
+['gesturestart', 'gesturechange', 'gestureend'].forEach(function (ev) {
+  document.addEventListener(ev, function (e) { e.preventDefault(); }, {passive: false});
+});
 
 // Do not trust the page to stay in front of you.
 addEventListener('pagehide', release);

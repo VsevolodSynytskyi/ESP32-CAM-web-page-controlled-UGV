@@ -71,6 +71,12 @@ at y = −0.8. It follows from asking for a pivot at centre-left and a curve the
 other way at bottom-left; any continuous mix between the two has to cross zero
 somewhere. Mirroring x when y < 0 removes it and costs the car-like feel.
 
+**Zoom is suppressed in JavaScript, not by the viewport meta.** iOS Safari has
+ignored `user-scalable=no` since iOS 10 and treats `touch-action` inconsistently
+for double-tap, so a thumb jabbing at the pad would zoom the page with no obvious
+way back. `web_page.h` swallows the second tap of a rapid pair and cancels
+Safari's gesture events. Don't remove it as redundant with the meta tag.
+
 **Nothing latches.** Letting go re-centres the stick, and backgrounding the page
 or losing WiFi mean stop too. `motors_tick()` stops the vehicle by itself after
 `CMD_TIMEOUT_MS` (300 ms) if no command arrives; the page sends at 20 Hz to stay
